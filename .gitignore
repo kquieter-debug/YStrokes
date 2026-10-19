@@ -50,3 +50,5 @@ app.*.map.json
 # Rust build artifacts
 /rust/target/
 /.reasonix
+
+.vscode/

@@ -3,12 +3,12 @@ import 'package:flutter/material.dart';
 import '../services/settings_service.dart';
 import 'home_screen.dart';
 
-/// 首次启动展示的欢迎界面。
+/// 首次启动展示的欢迎界面
 class WelcomeScreen extends StatelessWidget {
   const WelcomeScreen({super.key});
 
   Future<void> _onStart(BuildContext context) async {
-    // 记录「已看过欢迎界面」，之后启动不再显示。
+    // 记录是否首次启动，之后启动不再显示
     await SettingsService().markWelcomeSeen();
     if (!context.mounted) return;
     await Navigator.of(context).pushReplacement(
@@ -45,7 +45,7 @@ class WelcomeScreen extends StatelessWidget {
               ),
               const SizedBox(height: 8),
               Text(
-                '先进的前端框架...高性能的绘图引擎',
+                '现代化的前端框架 高性能的绘图引擎',
                 textAlign: TextAlign.center,
                 style: textTheme.bodyMedium
                     ?.copyWith(color: theme.colorScheme.onSurfaceVariant),
