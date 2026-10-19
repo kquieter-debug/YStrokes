@@ -1,22 +1,18 @@
-import 'dart:async';
 import 'dart:math' as math;
 
 import '../models/stroke.dart';
 import '../rust/api.dart' as rust;
 
-/// 画板引擎：管理笔画列表与撤销/重做栈，并把几何处理委托给 Rust。
+/// 画板引擎：管理笔画列表与撤销/重做栈。
 ///
 /// 职责划分：
-/// - Rust 负责计算密集的平滑/简化（`smooth_stroke` / `simplify_stroke`）。
-/// - Dart 负责会话状态（笔画顺序、撤销/重做）与最终渲染。
+/// - 几何平滑在采集阶段由 `StrokeSmoother` 增量完成（见该类注释）。
+/// - 本类只维护会话状态：笔画顺序、撤销/重做、版本号。
 /// - 持久化不在本类内：由 `DocumentStore` 负责 I/O，画板界面负责编排。
+///
+/// `addStroke` 是**同步**的：绘画应用里「抬手」必须当帧完成提交，任何异步等待
+/// 都会表现为笔画消失一帧再出现。跨语言调用一律不进入输入热路径。
 class DrawingEngine {
-  /// 平滑窗口大小（奇数更对称）。
-  static const int smoothWindow = 5;
-
-  /// Douglas-Peucker 容差（归一化坐标量纲）。
-  static const double simplifyTolerance = 0.002;
-
   final List<Stroke> _strokes = [];
   final List<_Edit> _undoStack = [];
   final List<_Edit> _redoStack = [];
@@ -25,12 +21,6 @@ class DrawingEngine {
 
   /// 状态版本号：每次内容变化自增，供渲染层判断是否需要重建缓存。
   int _revision = 0;
-
-  /// 串行化闸门：保证同时抬笔的多笔按抬笔顺序入栈。
-  ///
-  /// 平滑/简化是异步 FFI 调用，若并发处理，短笔画可能先返回并插队，
-  /// 导致层叠顺序与用户实际绘制顺序不一致。此处用 Future 链强制 FIFO。
-  Future<void> _tail = Future<void>.value();
 
   /// 当前可见笔画（只读视图；调用方无需关心内部结构）。
   List<Stroke> get strokes => List.unmodifiable(_strokes);
@@ -57,55 +47,27 @@ class DrawingEngine {
     _revision++;
   }
 
-  /// 处理并添加一笔：先平滑去抖、再简化采样点，然后入栈。
+  /// 提交一笔。
   ///
-  /// [raw] 为归一化坐标的原始采样点（按时间顺序）。
+  /// [points] 必须是 `StrokeSmoother.finish()` 的产出——即已经平滑、且与屏幕上
+  /// 显示的点列完全一致，本类不再做任何几何加工。
   /// [widthRatio] 为归一化笔宽（相对画布短边）。
-  Future<Stroke> addStroke(
-    List<rust.StrokePoint> raw, {
+  Stroke addStroke(
+    List<rust.StrokePoint> points, {
     required int color,
     required double widthRatio,
   }) {
-    final previous = _tail;
-    final gate = Completer<void>();
-    _tail = gate.future;
-    return _process(previous, gate, raw, color: color, widthRatio: widthRatio);
-  }
-
-  Future<Stroke> _process(
-    Future<void> previous,
-    Completer<void> gate,
-    List<rust.StrokePoint> raw, {
-    required int color,
-    required double widthRatio,
-  }) async {
-    try {
-      await previous;
-
-      var points = raw;
-      if (points.length >= 3) {
-        points = await rust.smoothStroke(points: points, window: smoothWindow);
-        points = await rust.simplifyStroke(
-          points: points,
-          tolerance: simplifyTolerance,
-        );
-      }
-
-      final stroke = Stroke(
-        id: _nextId++,
-        color: color,
-        widthRatio: widthRatio,
-        points: points,
-      );
-      _strokes.add(stroke);
-      _undoStack.add(_AddEdit(stroke));
-      _redoStack.clear();
-      _revision++;
-      return stroke;
-    } finally {
-      // 无论成功与否都必须放行后续笔画，否则整条队列会永久阻塞。
-      gate.complete();
-    }
+    final stroke = Stroke(
+      id: _nextId++,
+      color: color,
+      widthRatio: widthRatio,
+      points: points,
+    );
+    _strokes.add(stroke);
+    _undoStack.add(_AddEdit(stroke));
+    _redoStack.clear();
+    _revision++;
+    return stroke;
   }
 
   /// 撤销上一步；无历史时返回 false。
@@ -128,7 +90,7 @@ class DrawingEngine {
     return true;
   }
 
-  /// 清空画布。与旧实现不同，此操作可撤销——误触清空不应造成不可逆损失。
+  /// 清空画布。此操作可撤销——误触清空不应造成不可逆损失。
   bool clear() {
     if (_strokes.isEmpty) return false;
     _undoStack.add(_ClearEdit(List<Stroke>.of(_strokes)));

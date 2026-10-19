@@ -8,6 +8,7 @@ import '../rust/api.dart' as rust;
 import '../services/document_store.dart';
 import '../services/drawing_engine.dart';
 import '../services/project_store.dart';
+import '../services/stroke_smoother.dart';
 
 /// 工程画板：采集指针事件 → 交给 Rust 平滑/简化 → 渲染为笔触。
 ///
@@ -37,11 +38,15 @@ class _CanvasScreenState extends State<CanvasScreen> with WidgetsBindingObserver
   /// 当前笔宽在 [_widthRatios] 中的下标。
   int _widthIndex = 1;
 
-  /// 正在绘制中的原始采样点（归一化坐标，尚未入栈）。
-  final List<rust.StrokePoint> _activePoints = [];
+  /// 当前笔画的增量平滑器；为空表示没有正在绘制的笔画。
+  StrokeSmoother? _smoother;
 
-  /// 活动笔画的版本号：`_activePoints` 是原地修改的，painter 只能靠它判断变化。
+  /// 活动笔画的版本号：点列是原地修改的，painter 只能靠它判断变化。
   int _activeRevision = 0;
+
+  /// 正在绘制中的点（已平滑，归一化坐标），直接用于渲染。
+  List<rust.StrokePoint> get _activePoints =>
+      _smoother?.points ?? const <rust.StrokePoint>[];
 
   /// 当前被跟踪的指针 id（忽略第二根手指）。
   int? _activePointer;
@@ -176,40 +181,54 @@ class _CanvasScreenState extends State<CanvasScreen> with WidgetsBindingObserver
     if (_loading || _activePointer != null) return; // 已有一根手指在绘制
     _activePointer = e.pointer;
     _strokeStartMs = DateTime.now().millisecondsSinceEpoch;
+
+    final smoother = StrokeSmoother(shortestSide: _canvasSize.shortestSide);
+    smoother.add(_toNormalized(e.localPosition, e.pressure));
     setState(() {
-      _activePoints
-        ..clear()
-        ..add(_toNormalized(e.localPosition, e.pressure));
+      _smoother = smoother;
       _activeRevision++;
     });
   }
 
   void _onPointerMove(PointerMoveEvent e) {
-    if (e.pointer != _activePointer) return;
-    setState(() {
-      _activePoints.add(_toNormalized(e.localPosition, e.pressure));
-      _activeRevision++;
-    });
+    final smoother = _smoother;
+    if (e.pointer != _activePointer || smoother == null) return;
+    smoother.add(_toNormalized(e.localPosition, e.pressure));
+    setState(() => _activeRevision++);
   }
 
-  Future<void> _onPointerUp(PointerUpEvent e) async {
+  /// 抬手即提交。
+  ///
+  /// 平滑已在采集阶段随点完成，此处不等待任何异步操作：清空活动层与写入新笔画
+  /// 发生在同一次 setState 里，因此不会出现「笔画先消失一帧、再带着新形状出现」。
+  void _onPointerUp(PointerUpEvent e) {
     if (e.pointer != _activePointer) return;
-    final points = List<rust.StrokePoint>.of(_activePoints);
-    setState(() {
-      _activePointer = null;
-      _activePoints.clear();
-      _activeRevision++;
-    });
-    if (points.isEmpty) return;
+    _activePointer = null;
+    final smoother = _smoother;
+    if (smoother == null) {
+      setState(() => _smoother = null);
+      return;
+    }
 
-    // 交给 Rust 处理（平滑 + 简化）后入栈。
-    await _engine.addStroke(
-      points,
-      color: _color.toARGB32(),
-      widthRatio: _widthRatio,
-    );
-    if (!mounted) return;
-    _onDocumentChanged();
+    final points = smoother.finish();
+    if (points.isEmpty) {
+      setState(() {
+        _smoother = null;
+        _activeRevision++;
+      });
+      return;
+    }
+
+    setState(() {
+      _smoother = null;
+      _activeRevision++;
+      _engine.addStroke(
+        points,
+        color: _color.toARGB32(),
+        widthRatio: _widthRatio,
+      );
+    });
+    _scheduleSave();
   }
 
   void _onPointerCancel(PointerCancelEvent e) {
@@ -217,7 +236,7 @@ class _CanvasScreenState extends State<CanvasScreen> with WidgetsBindingObserver
     if (e.pointer != _activePointer) return;
     setState(() {
       _activePointer = null;
-      _activePoints.clear();
+      _smoother = null;
       _activeRevision++;
     });
   }

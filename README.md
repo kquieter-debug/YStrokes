@@ -71,6 +71,14 @@ stroke : id u32 | color u32 | width f32 | point_count u32
 point  : x f32 | y f32 | pressure f32 | timestamp_ms u32
 ```
 
+## 笔迹处理
+
+- **平滑在采集阶段增量完成**（`StrokeSmoother`）：点的取值一经窗口满足即固定，
+  因此「绘制中看到的形状」与「抬手后提交的形状」完全一致，不会出现抬手闪现或形变。
+- **输入热路径不跨 FFI**：抬手时同步提交，不存在等待异步返回的空窗帧。
+- Rust 侧的 `smooth_stroke` / `simplify_stroke` 保留用于批量处理（导出简化、
+  历史文档重算），不参与逐点绘制。
+
 ## Test
 
 ```powershell
