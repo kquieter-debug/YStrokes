@@ -24,13 +24,28 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   String dco_decode_String(dynamic raw);
 
   @protected
+  DecodeOutcome dco_decode_decode_outcome(dynamic raw);
+
+  @protected
   double dco_decode_f_64(dynamic raw);
+
+  @protected
+  List<int> dco_decode_list_prim_u_8_loose(dynamic raw);
 
   @protected
   Uint8List dco_decode_list_prim_u_8_strict(dynamic raw);
 
   @protected
+  List<Stroke> dco_decode_list_stroke(dynamic raw);
+
+  @protected
   List<StrokePoint> dco_decode_list_stroke_point(dynamic raw);
+
+  @protected
+  String? dco_decode_opt_String(dynamic raw);
+
+  @protected
+  Stroke dco_decode_stroke(dynamic raw);
 
   @protected
   StrokeBounds dco_decode_stroke_bounds(dynamic raw);
@@ -51,13 +66,28 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   String sse_decode_String(SseDeserializer deserializer);
 
   @protected
+  DecodeOutcome sse_decode_decode_outcome(SseDeserializer deserializer);
+
+  @protected
   double sse_decode_f_64(SseDeserializer deserializer);
+
+  @protected
+  List<int> sse_decode_list_prim_u_8_loose(SseDeserializer deserializer);
 
   @protected
   Uint8List sse_decode_list_prim_u_8_strict(SseDeserializer deserializer);
 
   @protected
+  List<Stroke> sse_decode_list_stroke(SseDeserializer deserializer);
+
+  @protected
   List<StrokePoint> sse_decode_list_stroke_point(SseDeserializer deserializer);
+
+  @protected
+  String? sse_decode_opt_String(SseDeserializer deserializer);
+
+  @protected
+  Stroke sse_decode_stroke(SseDeserializer deserializer);
 
   @protected
   StrokeBounds sse_decode_stroke_bounds(SseDeserializer deserializer);
@@ -84,7 +114,13 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   void sse_encode_String(String self, SseSerializer serializer);
 
   @protected
+  void sse_encode_decode_outcome(DecodeOutcome self, SseSerializer serializer);
+
+  @protected
   void sse_encode_f_64(double self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_list_prim_u_8_loose(List<int> self, SseSerializer serializer);
 
   @protected
   void sse_encode_list_prim_u_8_strict(
@@ -93,10 +129,19 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_list_stroke(List<Stroke> self, SseSerializer serializer);
+
+  @protected
   void sse_encode_list_stroke_point(
     List<StrokePoint> self,
     SseSerializer serializer,
   );
+
+  @protected
+  void sse_encode_opt_String(String? self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_stroke(Stroke self, SseSerializer serializer);
 
   @protected
   void sse_encode_stroke_bounds(StrokeBounds self, SseSerializer serializer);

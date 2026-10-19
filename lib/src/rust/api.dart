@@ -6,8 +6,8 @@
 import 'frb_generated.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
-// These functions are ignored because they are not marked as `pub`: `douglas_peucker`, `perpendicular_distance`
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `clone`, `clone`, `eq`, `eq`, `fmt`, `fmt`
+// These functions are ignored because they are not marked as `pub`: `douglas_peucker`, `perpendicular_distance`, `read_f32`, `read_u16`, `read_u32`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`
 
 /// 验证 FFI 链路的往返调用：前端调用后应收到 "pong"。
 Future<String> ping() => RustLib.instance.api.crateApiPing();
@@ -42,6 +42,71 @@ Future<List<StrokePoint>> smoothStroke({
 /// 计算点集的轴对齐包围盒；空输入返回全 0 的包围盒。
 Future<StrokeBounds> strokeBounds({required List<StrokePoint> points}) =>
     RustLib.instance.api.crateApiStrokeBounds(points: points);
+
+/// 把笔画序列编码为字节流，供前端原子写入磁盘。
+Future<Uint8List> encodeDocument({required List<Stroke> strokes}) =>
+    RustLib.instance.api.crateApiEncodeDocument(strokes: strokes);
+
+/// 把字节流解码为笔画列表；损坏时尽可能恢复已解析的部分。
+Future<DecodeOutcome> decodeDocument({required List<int> bytes}) =>
+    RustLib.instance.api.crateApiDecodeDocument(bytes: bytes);
+
+/// 文档解码结果。
+///
+/// 解码采用「部分恢复」策略：文档截断或尾部损坏时，保留此前已完整解析的笔画，
+/// 并通过 `error` 说明原因。对绘画应用而言，「保住大部分作品」优于「全有或全无」。
+class DecodeOutcome {
+  final List<Stroke> strokes;
+  final String? error;
+
+  const DecodeOutcome({required this.strokes, this.error});
+
+  @override
+  int get hashCode => strokes.hashCode ^ error.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is DecodeOutcome &&
+          runtimeType == other.runtimeType &&
+          strokes == other.strokes &&
+          error == other.error;
+}
+
+/// 一条完整笔画。
+///
+/// - `id`：工程内递增 id，用于稳定排序与后续的图层操作。
+/// - `color`：ARGB 颜色（0xAARRGGBB）。
+/// - `width`：画笔宽度，**归一化比例**（相对画布短边，例如 0.01 表示 1%）。
+///   与坐标同为无量纲量，保证缩放/导出后笔触比例不失真。
+/// - `points`：归一化采样点，按绘制顺序排列。
+class Stroke {
+  final int id;
+  final int color;
+  final double width;
+  final List<StrokePoint> points;
+
+  const Stroke({
+    required this.id,
+    required this.color,
+    required this.width,
+    required this.points,
+  });
+
+  @override
+  int get hashCode =>
+      id.hashCode ^ color.hashCode ^ width.hashCode ^ points.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is Stroke &&
+          runtimeType == other.runtimeType &&
+          id == other.id &&
+          color == other.color &&
+          width == other.width &&
+          points == other.points;
+}
 
 /// 笔画的轴对齐包围盒。
 class StrokeBounds {
