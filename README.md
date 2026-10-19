@@ -12,7 +12,7 @@ ystrokes/
 │     ├─ app.dart            # Root widget
 │     ├─ models/             # Stroke / DrawingProject
 │     ├─ screens/            # welcome / home / canvas...
-│     ├─ services/           # DrawingEngine / ProjectStore / SettingsService...
+│     ├─ services/           # DrawingEngine / DocumentStore / ProjectStore...
 │     ├─ widgets/            # Custom widgets
 │     └─ rust/               # flutter_rust_bridge
 ├─ rust/                     # Rust backend crate
@@ -49,6 +49,27 @@ flutter run                        # Or flutter build apk
 1. Edit `rust/src/api/mod.rs`。
 2. Regenerate：`flutter_rust_bridge_codegen generate`。
 3. Run rust tests：`cargo test --manifest-path rust/Cargo.toml`。
+
+## 数据存储
+
+| 内容 | 位置 | 说明 |
+| --- | --- | --- |
+| 工程元数据 | `shared_preferences`（键 `projects`） | 轻量索引，列表页只读这里 |
+| 笔画数据 | `<appDocuments>/projects/<projectId>/strokes.bin` | 二进制，由 Rust 编解码 |
+
+- **元数据与笔画分离**：笔画体量大、变化频繁，独立成文件，避免每次保存全量重写。
+- **原子写入**：先写 `strokes.bin.tmp` 再重命名覆盖，进程中途被杀不会留下半截文档。
+- **保存时机**：抬笔后 0.8s 节流保存；退到后台或离开画布立即落盘。
+- **归一化**：坐标相对画布尺寸（0~1），笔宽相对画布短边，换分辨率或导出时比例不变。
+- **容错**：文档损坏时按「部分恢复」处理，保留已解析的完整笔画，并在画布顶部提示原因。
+
+文档格式（全部小端序）：
+
+```
+header : "YSTK"(4) | version u16 | stroke_count u32
+stroke : id u32 | color u32 | width f32 | point_count u32
+point  : x f32 | y f32 | pressure f32 | timestamp_ms u32
+```
 
 ## Test
 

@@ -1,5 +1,5 @@
 name: ystrokes
-description: "A new Flutter project."
+description: "Android 端矢量笔画绘画应用，Flutter 前端 + Rust 几何引擎。"
 # The following line prevents the package from being accidentally published to
 # pub.dev using `flutter pub publish`. This is preferred for private packages.
 publish_to: 'none' # Remove this line if you wish to publish to pub.dev
@@ -35,6 +35,7 @@ dependencies:
   # Use with the CupertinoIcons class for iOS style icons.
   cupertino_icons: ^1.0.8
   flutter_rust_bridge: 2.12.0
+  path_provider: ^2.1.6
   shared_preferences: ^2.5.5
   ystrokes_rust:
     path: rust_builder

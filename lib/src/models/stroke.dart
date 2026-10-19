@@ -1,4 +1,4 @@
-import '../rust/api.dart';
+import '../rust/api.dart' as rust;
 
 /// 一条完整笔画：由若干归一化采样点组成。
 ///
@@ -8,7 +8,7 @@ class Stroke {
   Stroke({
     required this.id,
     required this.color,
-    required this.width,
+    required this.widthRatio,
     required this.points,
   });
 
@@ -18,9 +18,32 @@ class Stroke {
   /// ARGB 颜色值（0xAARRGGBB）。
   final int color;
 
-  /// 笔画粗细（逻辑像素）。
-  final double width;
+  /// 笔画粗细，**归一化比例**：相对画布短边的占比（例如 0.01 表示 1%）。
+  ///
+  /// 与坐标同为无量纲量，因此更换分辨率、缩放画布或导出图片时笔触比例都不会失真。
+  /// 渲染时换算为像素：`widthRatio * size.shortestSide`。
+  final double widthRatio;
 
   /// 归一化坐标采样点（0.0 ~ 1.0）。
-  final List<StrokePoint> points;
+  final List<rust.StrokePoint> points;
+
+  /// 换算为当前画布下的像素笔宽，并保证至少 1 像素可见。
+  double widthInPixels(double shortestSide) =>
+      (widthRatio * shortestSide).clamp(1.0, double.infinity);
+
+  /// 转换为 FFI 层结构，供持久化编码使用。
+  rust.Stroke toRust() => rust.Stroke(
+        id: id,
+        color: color,
+        width: widthRatio,
+        points: points,
+      );
+
+  /// 从 FFI 层结构还原。
+  factory Stroke.fromRust(rust.Stroke source) => Stroke(
+        id: source.id,
+        color: source.color,
+        widthRatio: source.width,
+        points: source.points,
+      );
 }
