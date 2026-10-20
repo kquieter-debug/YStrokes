@@ -12,6 +12,7 @@ A vector-stroke drawing app for Android, built around how a stroke actually feel
 ## Features
 
 - **Vector storage**: strokes are stored in normalized coordinates, decoupled from resolution, so proportions survive device changes and export.
+- **Document setup**: pick a size, resolution, and background when creating a document (A4 / A5 / phone / square presets included); the spec is saved with the project and never changes with the device.
 - **Incremental smoothing**: smoothing happens as samples arrive. The point list committed on pen-up is bit-for-bit what was on screen — no flicker, no shape shift.
 - **Durable writes**: atomic write (temp file + rename) means a process kill never leaves a truncated document; damaged documents recover partially instead of failing outright.
 - **Undoable**: both adding a stroke and clearing the canvas can be undone.
@@ -33,11 +34,12 @@ ystrokes/
 │  ├─ main.dart              # Entry point: initializes FRB
 │  └─ src/
 │     ├─ app.dart            # Root widget and theme
-│     ├─ models/             # DrawingProject / Stroke
-│     ├─ screens/            # welcome / home / canvas
+│     ├─ models/             # DrawingProject / Stroke / DocumentSpec / CanvasPreset
+│     ├─ screens/            # welcome / home / canvas / new_document
+│     │                      # sections: projects / settings / about
 │     ├─ services/           # StrokeSmoother / DrawingEngine / canvas_geometry
-│     │                      # DocumentStore / ProjectStore / SettingsService
-│     ├─ widgets/            # ProjectTile
+│     │                      # DocumentStore / ProjectStore / SettingsService / AppTheme
+│     ├─ widgets/            # ProjectTile / AppIcon / SectionCard
 │     └─ rust/               # FRB generated code (do not edit)
 ├─ rust/                     # Rust backend
 │  ├─ Cargo.toml
@@ -48,6 +50,7 @@ ystrokes/
 ├─ rust_builder/             # cargokit: Rust → Android .so
 ├─ android/                  # Android project
 ├─ assets/                   # App icons
+│  └─ icons/                 # UI SVG icons (swap the files to re-skin)
 ├─ test/                     # Unit and widget tests
 ├─ windows/                  # Windows project (rendering checks only, not a target)
 ├─ flutter_rust_bridge.yaml  # codegen configuration
@@ -124,7 +127,7 @@ The canvas is built from three layers, bottom to top:
 2. **Document**: the paper surface, centered and sized by the project's own aspect ratio. Strokes are only drawn here.
 3. **Tool panel**: floating against the right edge, arranged vertically in two columns, sized adaptively from the screen's short side.
 
-The panel is an overlay, not a layout element, so making it wider or narrower never squeezes or rescales the document. The document rectangle depends only on the document aspect ratio and the available area. If a project has no recorded aspect ratio, the canvas adopts the current viewport ratio on first open and writes it back to the metadata; from then on, rotating the device or switching devices no longer changes the document's shape.
+The panel is an overlay, not a layout element, so making it wider or narrower never squeezes or rescales the document. The document rectangle depends only on the document aspect ratio and the available area. That ratio comes from the document spec chosen at creation time (`DocumentSpec`) and is saved with the project, so rotating the device or switching devices never changes the document's shape.
 
 Panel cells scale between 34 and 48dp based on the short side of the screen. Using the short side (rather than width) keeps touch density consistent in portrait and landscape.
 

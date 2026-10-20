@@ -12,6 +12,7 @@
 ## 特性
 
 - **矢量存储**：笔画以归一化坐标保存，与分辨率解耦，更换设备或导出时比例不变。
+- **画布规格**：新建时指定尺寸、分辨率与底色（内置 A4 / A5 / 手机 / 正方形等模板），参数随工程保存，不受设备影响。
 - **增量平滑**：平滑在采集阶段完成，抬手提交的点列与屏幕显示逐位相同——不闪烁、不形变。
 - **可靠落盘**：原子写入（临时文件 + 重命名），进程被系统回收也不会留下半截文档；文档损坏时按「部分恢复」处理。
 - **可撤销**：新增笔画与清空画布均可撤销。
@@ -33,11 +34,12 @@ ystrokes/
 │  ├─ main.dart              # 入口：初始化 FRB
 │  └─ src/
 │     ├─ app.dart            # 根组件与主题
-│     ├─ models/             # DrawingProject / Stroke
-│     ├─ screens/            # welcome / home / canvas
+│     ├─ models/             # DrawingProject / Stroke / DocumentSpec / CanvasPreset
+│     ├─ screens/            # welcome / home / canvas / new_document
+│     │                      # sections：工程区 / 设置 / 关于
 │     ├─ services/           # StrokeSmoother / DrawingEngine / canvas_geometry
-│     │                      # DocumentStore / ProjectStore / SettingsService
-│     ├─ widgets/            # ProjectTile
+│     │                      # DocumentStore / ProjectStore / SettingsService / AppTheme
+│     ├─ widgets/            # ProjectTile / AppIcon / SectionCard
 │     └─ rust/               # FRB 生成代码（勿手改）
 ├─ rust/                     # Rust 后端
 │  ├─ Cargo.toml
@@ -48,6 +50,7 @@ ystrokes/
 ├─ rust_builder/             # cargokit：Rust → Android .so
 ├─ android/                  # Android 工程
 ├─ assets/                   # 应用图标
+│  └─ icons/                 # 界面 SVG 图标（替换文件即可换图）
 ├─ test/                     # 单元与 widget 测试
 ├─ windows/                  # Windows 工程（仅用于快速验证渲染，非交付目标）
 ├─ flutter_rust_bridge.yaml  # codegen 配置
@@ -125,8 +128,8 @@ point  : x f32 | y f32 | pressure f32 | timestamp_ms u32
 3. **工具面板**：贴右缘悬浮、竖向排列、默认两列，尺寸随屏幕短边自适应。
 
 面板是覆盖层而非布局元素，因此它变宽或变窄都不会挤压、缩放文档；文档矩形只由
-「文档比例」与「可用区域」决定。工程若尚未记录宽高比，会在首次打开时按当前视口
-比例补齐并写入元数据，此后旋转屏幕或更换设备都不会改变文档形状。
+「文档比例」与「可用区域」决定。文档比例来自新建时设定的画布规格（`DocumentSpec`），
+随工程保存，因此旋转屏幕或更换设备都不会改变文档形状。
 
 工具面板的尺寸随屏幕短边在 34~48dp 之间自适应，取短边而非宽度是为了让竖屏与横屏
 获得一致的触控密度。
