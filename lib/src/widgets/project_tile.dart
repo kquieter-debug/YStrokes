@@ -4,10 +4,18 @@ import '../models/project.dart';
 
 /// 工程预览卡片。
 class ProjectTile extends StatelessWidget {
-  const ProjectTile({super.key, required this.project, required this.onTap});
+  const ProjectTile({
+    super.key,
+    required this.project,
+    required this.onTap,
+    this.onLongPress,
+  });
 
   final DrawingProject project;
   final VoidCallback onTap;
+
+  /// 长按回调：用于弹出工程操作（删除等）。
+  final VoidCallback? onLongPress;
 
   String get _updatedLabel {
     final now = DateTime.now();
@@ -29,6 +37,7 @@ class ProjectTile extends StatelessWidget {
       clipBehavior: Clip.antiAlias,
       child: InkWell(
         onTap: onTap,
+        onLongPress: onLongPress,
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [

@@ -52,4 +52,16 @@ class ProjectStore {
     projects[index] = projects[index].copyWith(updatedAt: DateTime.now());
     await saveProjects(projects);
   }
+
+  /// 从索引中移除工程。
+  ///
+  /// 只负责元数据；对应的笔画文件由 `DocumentStore.deleteStrokes` 清理——
+  /// 两处存储分离，删除也需要分两步执行。
+  Future<void> deleteProject(String id) async {
+    final projects = await loadProjects();
+    final before = projects.length;
+    projects.removeWhere((p) => p.id == id);
+    if (projects.length == before) return;
+    await saveProjects(projects);
+  }
 }
