@@ -35,7 +35,7 @@ ystrokes/
 │     ├─ app.dart            # 根组件与主题
 │     ├─ models/             # DrawingProject / Stroke
 │     ├─ screens/            # welcome / home / canvas
-│     ├─ services/           # StrokeSmoother / DrawingEngine
+│     ├─ services/           # StrokeSmoother / DrawingEngine / canvas_geometry
 │     │                      # DocumentStore / ProjectStore / SettingsService
 │     ├─ widgets/            # ProjectTile
 │     └─ rust/               # FRB 生成代码（勿手改）
@@ -116,6 +116,21 @@ point  : x f32 | y f32 | pressure f32 | timestamp_ms u32
 - **输入热路径不跨 FFI**：抬手时同步提交，不存在等待异步返回的空窗帧。
 - Rust 侧的 `smooth_stroke` / `simplify_stroke` 保留用于批量处理（导出简化、历史文档重算），不参与逐点绘制。
 
+### 画布与工具面板
+
+画板由三层构成，自下而上：
+
+1. **工作台**：文档之外的底色区域。
+2. **文档**：按工程固有宽高比居中的纸面，笔画只绘制在这里。
+3. **工具面板**：贴右缘悬浮、竖向排列、默认两列，尺寸随屏幕短边自适应。
+
+面板是覆盖层而非布局元素，因此它变宽或变窄都不会挤压、缩放文档；文档矩形只由
+「文档比例」与「可用区域」决定。工程若尚未记录宽高比，会在首次打开时按当前视口
+比例补齐并写入元数据，此后旋转屏幕或更换设备都不会改变文档形状。
+
+工具面板的尺寸随屏幕短边在 34~48dp 之间自适应，取短边而非宽度是为了让竖屏与横屏
+获得一致的触控密度。
+
 ### 坐标与笔宽契约
 
 - 坐标：相对画布尺寸归一化到 `0.0 ~ 1.0`。
@@ -136,7 +151,7 @@ flutter analyze                              # 静态检查
 ## 已知限制
 
 - 仅面向 Android；`windows/` 工程用于调试渲染，不作为交付目标。
-- 画布工具栏为单行布局，在窄屏（< 425dp）下会溢出，待重构。
+- 工具面板固定两列、暂不支持折叠，也没有自定义配色与笔宽。
 - 尚无橡皮擦、缩放/平移、导出与图层面板。
 - `applicationId` 仍为 `com.example.ystrokes`，发布前需替换。
 

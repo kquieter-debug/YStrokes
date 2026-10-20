@@ -35,7 +35,7 @@ ystrokes/
 │     ├─ app.dart            # Root widget and theme
 │     ├─ models/             # DrawingProject / Stroke
 │     ├─ screens/            # welcome / home / canvas
-│     ├─ services/           # StrokeSmoother / DrawingEngine
+│     ├─ services/           # StrokeSmoother / DrawingEngine / canvas_geometry
 │     │                      # DocumentStore / ProjectStore / SettingsService
 │     ├─ widgets/            # ProjectTile
 │     └─ rust/               # FRB generated code (do not edit)
@@ -116,6 +116,18 @@ Coordinates are stored as f32: normalized values live in 0–1, absolute precisi
 - **The input hot path never crosses FFI**: pen-up commits synchronously, so there is no gap frame waiting on an async round trip.
 - Rust's `smooth_stroke` / `simplify_stroke` remain for batch work (export simplification, reprocessing legacy documents) and are not used per point.
 
+### Canvas and tool panel
+
+The canvas is built from three layers, bottom to top:
+
+1. **Pasteboard**: the area outside the document.
+2. **Document**: the paper surface, centered and sized by the project's own aspect ratio. Strokes are only drawn here.
+3. **Tool panel**: floating against the right edge, arranged vertically in two columns, sized adaptively from the screen's short side.
+
+The panel is an overlay, not a layout element, so making it wider or narrower never squeezes or rescales the document. The document rectangle depends only on the document aspect ratio and the available area. If a project has no recorded aspect ratio, the canvas adopts the current viewport ratio on first open and writes it back to the metadata; from then on, rotating the device or switching devices no longer changes the document's shape.
+
+Panel cells scale between 34 and 48dp based on the short side of the screen. Using the short side (rather than width) keeps touch density consistent in portrait and landscape.
+
 ### Coordinate and width contracts
 
 - Coordinates: normalized to `0.0 ~ 1.0` relative to canvas size.
@@ -136,7 +148,7 @@ flutter analyze                              # static analysis
 ## Known limitations
 
 - Android only; the `windows/` project exists to debug rendering, not as a delivery target.
-- The canvas toolbar is a single non-scrolling row and overflows on narrow screens (< 425dp); a redesign is pending.
+- The tool panel is fixed at two columns with no collapse, and offers no custom colors or widths.
 - No eraser, zoom/pan, export, or layers yet.
 - `applicationId` is still `com.example.ystrokes` and must be changed before release.
 
