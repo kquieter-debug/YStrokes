@@ -487,7 +487,7 @@ class _EmptyState extends StatelessWidget {
           Text('还没有工程', style: theme.textTheme.titleMedium),
           const SizedBox(height: 8),
           Text(
-            '点击右下角「新建工程」开始创作',
+            '点击下方「新建工程」开始创作',
             style: theme.textTheme.bodyMedium?.copyWith(
               color: theme.colorScheme.onSurfaceVariant,
             ),
