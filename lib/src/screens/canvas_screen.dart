@@ -11,6 +11,7 @@ import '../models/tool_settings.dart';
 import '../rust/api/stroke.dart' as rust;
 import '../rust/api/tools.dart';
 import '../services/canvas_geometry.dart';
+import '../services/canvas_viewport.dart';
 import '../services/document_store.dart';
 import '../services/drawing_engine.dart';
 import '../services/project_store.dart';
@@ -111,6 +112,9 @@ class _CanvasScreenState extends State<CanvasScreen>
 
   /// 文档在屏幕上的实际矩形（逻辑像素），所有坐标换算都以它为准。
   Rect _documentRect = Rect.zero;
+
+  /// 视口：缩放 / 旋转 / 平移。默认「适配画布」。
+  CanvasViewport _viewport = const CanvasViewport();
 
   /// 已完成笔画的渲染缓存。
   ui.Picture? _committedPicture;
@@ -303,10 +307,30 @@ class _CanvasScreenState extends State<CanvasScreen>
     }
   }
 
-  // ---- 指针采集 ----
+  // ---- 指针采集与双指变换 ----
+
+  /// 当前按下的所有指针（屏幕坐标）。
+  ///
+  /// 单指用于绘制，双指用于缩放/旋转/平移。用原始指针而不是 `GestureDetector`，
+  /// 是因为绘制必须逐点同步处理，不能等手势竞技场判定结束。
+  final Map<int, Offset> _pointers = <int, Offset>{};
+
+  bool _transforming = false;
+  CanvasViewport _gestureStartViewport = const CanvasViewport();
+  Offset _gestureStartCentroid = Offset.zero;
+  Offset _gestureStartPointA = Offset.zero;
+  Offset _gestureStartPointB = Offset.zero;
 
   void _onPointerDown(PointerDownEvent e) {
-    if (_loading || _activePointer != null) return; // 已有一根手指在绘制
+    _pointers[e.pointer] = e.localPosition;
+
+    // 第二根手指落下：放弃当前笔画，转入双指变换。
+    if (_pointers.length >= 2) {
+      _beginTransform();
+      return;
+    }
+
+    if (_loading || _activePointer != null) return;
     if (_documentRect.isEmpty) return;
 
     _activePointer = e.pointer;
@@ -324,6 +348,14 @@ class _CanvasScreenState extends State<CanvasScreen>
   }
 
   void _onPointerMove(PointerMoveEvent e) {
+    if (!_pointers.containsKey(e.pointer)) return;
+    _pointers[e.pointer] = e.localPosition;
+
+    if (_transforming && _pointers.length >= 2) {
+      _updateTransform();
+      return;
+    }
+
     final smoother = _smoother;
     if (e.pointer != _activePointer || smoother == null) return;
     smoother.add(_toNormalized(e.localPosition, e.pressure));
@@ -335,6 +367,13 @@ class _CanvasScreenState extends State<CanvasScreen>
   /// 平滑已在采集阶段随点完成，此处不等待任何异步操作：清空活动层与写入新笔画
   /// 发生在同一次 setState 里，因此不会出现「笔画先消失一帧、再带着新形状出现」。
   void _onPointerUp(PointerUpEvent e) {
+    _pointers.remove(e.pointer);
+
+    if (_transforming) {
+      if (_pointers.length < 2) _endTransform();
+      return; // 变换结束时残余的指针不再落笔，避免误画
+    }
+
     if (e.pointer != _activePointer) return;
     _activePointer = null;
     final smoother = _smoother;
@@ -366,6 +405,9 @@ class _CanvasScreenState extends State<CanvasScreen>
   }
 
   void _onPointerCancel(PointerCancelEvent e) {
+    _pointers.remove(e.pointer);
+    if (_transforming && _pointers.length < 2) _endTransform();
+
     // 手势被系统打断（来电、返回手势等）时丢弃这一笔的半成品。
     if (e.pointer != _activePointer) return;
     setState(() {
@@ -375,18 +417,71 @@ class _CanvasScreenState extends State<CanvasScreen>
     });
   }
 
+  /// 开始双指变换：记录基线，丢弃当前未完成的笔画。
+  void _beginTransform() {
+    final points = _pointers.values.take(2).toList();
+    _transforming = true;
+    _gestureStartViewport = _viewport;
+    _gestureStartPointA = points[0];
+    _gestureStartPointB = points[1];
+    _gestureStartCentroid = (points[0] + points[1]) / 2;
+
+    if (_activePointer != null || _smoother != null) {
+      _activePointer = null;
+      _smoother = null;
+      _activeRevision++;
+    }
+    setState(() {});
+  }
+
+  void _updateTransform() {
+    final points = _pointers.values.take(2).toList();
+    final a = points[0];
+    final b = points[1];
+    final startVector = _gestureStartPointB - _gestureStartPointA;
+    final currentVector = b - a;
+    if (startVector.distance < 1 || currentVector.distance < 1) return;
+
+    final scaleFactor = currentVector.distance / startVector.distance;
+    final rotationDelta =
+        math.atan2(currentVector.dy, currentVector.dx) -
+            math.atan2(startVector.dy, startVector.dx);
+
+    setState(() {
+      _viewport = _gestureStartViewport.applyGesture(
+        startCentroid: _gestureStartCentroid,
+        currentCentroid: (a + b) / 2,
+        scaleFactor: scaleFactor,
+        rotationDelta: rotationDelta,
+        docRect: _documentRect,
+      );
+    });
+  }
+
+  void _endTransform() {
+    _transforming = false;
+    setState(() {});
+  }
+
+  /// 恢复「适配画布」。
+  void _resetViewport() {
+    if (_viewport.isIdentity) return;
+    setState(() => _viewport = const CanvasViewport());
+  }
+
   /// 把指针位置转换为文档内的归一化坐标（0~1）。
   ///
-  /// 基准是 [_documentRect] 而非整个画布层：文档之外的空白区域会被夹到边缘，
-  /// 否则笔画会跑到纸面之外。
+  /// 先经视口反算回文档坐标，再归一化：缩放或旋转后落笔位置才不会偏移。
+  /// 文档之外的区域会被夹到边缘，否则笔画会跑到纸面之外。
   rust.StrokePoint _toNormalized(Offset local, double pressure) {
     final rect = _documentRect;
+    final doc = _viewport.toDocument(local, rect);
     final x = rect.width <= 0
         ? 0.0
-        : ((local.dx - rect.left) / rect.width).clamp(0.0, 1.0);
+        : ((doc.dx - rect.left) / rect.width).clamp(0.0, 1.0);
     final y = rect.height <= 0
         ? 0.0
-        : ((local.dy - rect.top) / rect.height).clamp(0.0, 1.0);
+        : ((doc.dy - rect.top) / rect.height).clamp(0.0, 1.0);
     final ms = DateTime.now().millisecondsSinceEpoch - _strokeStartMs;
     return rust.StrokePoint(
       x: x,
@@ -454,6 +549,11 @@ class _CanvasScreenState extends State<CanvasScreen>
         appBar: AppBar(
           title: Text(widget.project.name),
           actions: [
+            IconButton(
+              onPressed: _viewport.isIdentity ? null : _resetViewport,
+              tooltip: '适配画布',
+              icon: const Icon(Icons.fit_screen_outlined),
+            ),
             IconButton(
               onPressed: _openLayers,
               tooltip: '图层',
@@ -630,6 +730,7 @@ class _CanvasScreenState extends State<CanvasScreen>
                   activeWidth: _activeSettings.widthRatio * rect.shortestSide,
                   activeErase: erasing,
                   activeRevision: _activeRevision,
+                  viewport: _viewport,
                 ),
               ),
             ],
@@ -809,6 +910,7 @@ class _CanvasPainter extends CustomPainter {
     required this.activeWidth,
     required this.activeErase,
     required this.activeRevision,
+    required this.viewport,
   });
 
   final ui.Picture picture;
@@ -822,11 +924,24 @@ class _CanvasPainter extends CustomPainter {
   final double activeWidth;
   final bool activeErase;
   final int activeRevision;
+  final CanvasViewport viewport;
 
   @override
   void paint(Canvas canvas, Size size) {
     if (rect.isEmpty) return;
 
+    // 视口变换统一在这里施加：已完成内容仍以「文档坐标」缓存，
+    // 缩放与旋转不需要重建 picture，只是换一次变换矩阵。
+    canvas.save();
+    viewport.applyTo(canvas, rect);
+    try {
+      _paintContent(canvas);
+    } finally {
+      canvas.restore();
+    }
+  }
+
+  void _paintContent(Canvas canvas) {
     if (activeErase) {
       _paintDocument(
         canvas,
@@ -866,7 +981,8 @@ class _CanvasPainter extends CustomPainter {
       oldDelegate.activeColor != activeColor ||
       oldDelegate.activeWidth != activeWidth ||
       oldDelegate.activeErase != activeErase ||
-      oldDelegate.activeRevision != activeRevision;
+      oldDelegate.activeRevision != activeRevision ||
+      oldDelegate.viewport != viewport;
 }
 
 /// 工具面板的尺寸方案：随屏幕短边自适应。
