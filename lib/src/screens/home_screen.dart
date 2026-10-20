@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../models/project.dart';
 import '../services/project_store.dart';
+import '../widgets/app_icon.dart';
 import '../widgets/project_tile.dart';
 import 'canvas_screen.dart';
 
@@ -82,13 +83,20 @@ class _HomeScreenState extends State<HomeScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('YStrokes')),
+      body: SafeArea(
+        bottom: false,
+        child: Column(
+          children: [
+            const _HomeHeader(),
+            Expanded(child: _buildBody()),
+          ],
+        ),
+      ),
       floatingActionButton: FloatingActionButton.extended(
         onPressed: _createProject,
         icon: const Icon(Icons.add),
         label: const Text('新建工程'),
       ),
-      body: _buildBody(),
     );
   }
 
@@ -137,6 +145,40 @@ class _EmptyState extends StatelessWidget {
             '点击右下角「新建工程」开始创作',
             style: theme.textTheme.bodyMedium
                 ?.copyWith(color: theme.colorScheme.onSurfaceVariant),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// 主界面标题栏。
+///
+/// 标题右侧的应用图标目前是占位资源（`assets/icons/app_logo.svg`），
+/// 后续替换该文件即可，无需改动代码。
+class _HomeHeader extends StatelessWidget {
+  const _HomeHeader();
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(20, 14, 20, 12),
+      child: Row(
+        children: [
+          Text(
+            'YStrokes',
+            style: theme.textTheme.headlineSmall?.copyWith(
+              fontWeight: FontWeight.w600,
+              letterSpacing: 0.2,
+            ),
+          ),
+          const SizedBox(width: 10),
+          AppIcon(
+            AppIcons.logo,
+            size: 24,
+            color: theme.colorScheme.primary,
+            semanticLabel: '应用图标占位',
           ),
         ],
       ),
