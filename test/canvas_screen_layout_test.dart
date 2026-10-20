@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'package:ystrokes/src/models/document_spec.dart';
 import 'package:ystrokes/src/models/project.dart';
 import 'package:ystrokes/src/screens/canvas_screen.dart';
 import 'package:ystrokes/src/services/document_store.dart';
@@ -39,7 +40,11 @@ void main() {
             project: DrawingProject.create(
               '布局用例',
               id: 'layout',
-              aspectRatio: 0.75,
+              document: const DocumentSpec(
+                widthPx: 750,
+                heightPx: 1000,
+                dpi: 72,
+              ),
             ),
             // 注入以临时目录为根的存储，避免依赖 path_provider 插件。
             documentStore: DocumentStore(rootDirectory: temp),

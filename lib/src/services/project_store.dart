@@ -2,6 +2,7 @@ import 'dart:convert';
 
 import 'package:shared_preferences/shared_preferences.dart';
 
+import '../models/document_spec.dart';
 import '../models/project.dart';
 
 /// 工程元数据的持久化存储。
@@ -31,10 +32,13 @@ class ProjectStore {
     await prefs.setString(_projectsKey, raw);
   }
 
-  /// 新建工程并持久化，返回创建后的工程。
-  Future<DrawingProject> createProject(String name) async {
+  /// 按用户选定的画布规格新建工程并持久化。
+  Future<DrawingProject> createProject(
+    String name,
+    DocumentSpec document,
+  ) async {
     final projects = await loadProjects();
-    final project = DrawingProject.create(name);
+    final project = DrawingProject.create(name, document: document);
     projects.insert(0, project);
     await saveProjects(projects);
     return project;
@@ -46,20 +50,6 @@ class ProjectStore {
     final index = projects.indexWhere((p) => p.id == id);
     if (index == -1) return;
     projects[index] = projects[index].copyWith(updatedAt: DateTime.now());
-    await saveProjects(projects);
-  }
-
-  /// 记录工程的文档宽高比。
-  ///
-  /// 历史工程缺少该字段，画板会在首次打开时按当前视口比例补齐并调用本方法，
-  /// 此后即使旋转屏幕或更换设备，文档形状也不再变化。
-  Future<void> updateAspectRatio(String id, double aspectRatio) async {
-    if (!aspectRatio.isFinite || aspectRatio <= 0) return;
-    final projects = await loadProjects();
-    final index = projects.indexWhere((p) => p.id == id);
-    if (index == -1) return;
-    if (projects[index].aspectRatio == aspectRatio) return;
-    projects[index] = projects[index].copyWith(aspectRatio: aspectRatio);
     await saveProjects(projects);
   }
 }

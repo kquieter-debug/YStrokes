@@ -66,9 +66,6 @@ class _CanvasScreenState extends State<CanvasScreen> with WidgetsBindingObserver
   /// 当前笔画起点时间（用于计算点间时间戳）。
   int _strokeStartMs = 0;
 
-  /// 文档宽高比；`null` 表示工程尚未记录，需按首次打开的视口补齐。
-  double? _documentAspect;
-
   /// 文档在屏幕上的实际矩形（逻辑像素），所有坐标换算都以它为准。
   Rect _documentRect = Rect.zero;
 
@@ -88,9 +85,6 @@ class _CanvasScreenState extends State<CanvasScreen> with WidgetsBindingObserver
   /// 自动保存节流窗口：抬笔后静置该时长才落盘，避免每笔都写文件。
   static const Duration _saveDebounce = Duration(milliseconds: 800);
 
-  /// 纸面颜色。属于文档内容，不随 UI 主题变化。
-  static const Color _paperColor = Color(0xFFFFFFFF);
-
   static const List<Color> _palette = [
     Color(0xFF000000), // 黑
     Color(0xFFEF4444), // 红
@@ -108,7 +102,6 @@ class _CanvasScreenState extends State<CanvasScreen> with WidgetsBindingObserver
   @override
   void initState() {
     super.initState();
-    _documentAspect = widget.project.aspectRatio;
     WidgetsBinding.instance.addObserver(this);
     _loadDocument();
   }
@@ -150,24 +143,6 @@ class _CanvasScreenState extends State<CanvasScreen> with WidgetsBindingObserver
         _loadWarning = '读取工程失败：$error';
       });
     }
-  }
-
-  /// 取文档比例；工程未记录时按当前视口比例补齐并回写。
-  ///
-  /// 只在首帧执行一次：此后无论屏幕如何变化，都沿用已确定的比例，
-  /// 从而保证「画布独立于显示环境」。
-  double _resolveAspect(Size available) {
-    final known = _documentAspect;
-    if (known != null && known > 0) return known;
-    if (available.width <= 0 || available.height <= 0) return 3 / 4;
-
-    final derived = available.width / available.height;
-    _documentAspect = derived;
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!mounted) return;
-      unawaited(_projectStore.updateAspectRatio(widget.project.id, derived));
-    });
-    return derived;
   }
 
   void _scheduleSave() {
@@ -439,10 +414,11 @@ class _CanvasScreenState extends State<CanvasScreen> with WidgetsBindingObserver
 
   Widget _buildCanvas() {
     final theme = Theme.of(context);
+    final document = widget.project.document;
     return LayoutBuilder(
       builder: (context, constraints) {
         final available = Size(constraints.maxWidth, constraints.maxHeight);
-        final rect = fitDocumentRect(available, _resolveAspect(available));
+        final rect = fitDocumentRect(available, document.aspectRatio);
         _documentRect = rect;
 
         return Listener(
@@ -456,11 +432,11 @@ class _CanvasScreenState extends State<CanvasScreen> with WidgetsBindingObserver
             children: [
               // 工作台：文档之外的区域。
               ColoredBox(color: theme.colorScheme.surfaceContainerLowest),
-              // 文档：按比例居中的纸面。
+              // 文档：按工程规格居中的纸面，底色来自创建时选择的背景。
               if (!rect.isEmpty)
                 Positioned.fromRect(
                   rect: rect,
-                  child: const ColoredBox(color: _paperColor),
+                  child: ColoredBox(color: Color(document.backgroundArgb)),
                 ),
               CustomPaint(painter: _CommittedPainter(_ensurePicture(rect))),
               CustomPaint(

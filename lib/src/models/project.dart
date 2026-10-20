@@ -1,3 +1,5 @@
+import 'document_spec.dart';
+
 /// 一个绘画工程（画板）的元数据。
 class DrawingProject {
   const DrawingProject({
@@ -5,7 +7,7 @@ class DrawingProject {
     required this.name,
     required this.createdAt,
     required this.updatedAt,
-    this.aspectRatio,
+    required this.document,
   });
 
   final String id;
@@ -13,19 +15,20 @@ class DrawingProject {
   final DateTime createdAt;
   final DateTime updatedAt;
 
-  /// 文档宽高比（`width / height`），决定画布的固有形状。
+  /// 文档规格（像素尺寸、分辨率、底色）。
   ///
-  /// 为 `null` 表示历史工程尚未记录：画板会在首次打开时采用当前视口比例并回写，
-  /// 从而在「不改变现有观感」的前提下完成迁移。
-  ///
-  /// 一旦确定就不再随屏幕变化——这是画布独立于设备的前提。
-  final double? aspectRatio;
+  /// 由创建时用户选定的参数决定，构成画布的固有形状与导出尺寸；
+  /// 之后不随屏幕或设备变化。
+  final DocumentSpec document;
+
+  /// 文档宽高比，渲染时用于容纳画布。
+  double get aspectRatio => document.aspectRatio;
 
   /// 创建一个新工程；[id] 为空时自动生成。
   factory DrawingProject.create(
     String name, {
     String? id,
-    double? aspectRatio,
+    required DocumentSpec document,
   }) {
     final now = DateTime.now();
     return DrawingProject(
@@ -33,7 +36,7 @@ class DrawingProject {
       name: name,
       createdAt: now,
       updatedAt: now,
-      aspectRatio: aspectRatio,
+      document: document,
     );
   }
 
@@ -42,28 +45,35 @@ class DrawingProject {
         'name': name,
         'createdAt': createdAt.toIso8601String(),
         'updatedAt': updatedAt.toIso8601String(),
-        if (aspectRatio != null) 'aspectRatio': aspectRatio,
+        'document': document.toJson(),
       };
 
-  factory DrawingProject.fromJson(Map<String, dynamic> json) => DrawingProject(
-        id: json['id'] as String,
-        name: json['name'] as String,
-        createdAt: DateTime.parse(json['createdAt'] as String),
-        updatedAt: DateTime.parse(json['updatedAt'] as String),
-        // 历史数据没有该字段：保持 null，由画板在首次打开时补齐。
-        aspectRatio: (json['aspectRatio'] as num?)?.toDouble(),
-      );
+  factory DrawingProject.fromJson(Map<String, dynamic> json) {
+    final rawDocument = json['document'];
+    return DrawingProject(
+      id: json['id'] as String,
+      name: json['name'] as String,
+      createdAt: DateTime.parse(json['createdAt'] as String),
+      updatedAt: DateTime.parse(json['updatedAt'] as String),
+      document: rawDocument is Map<String, dynamic>
+          ? DocumentSpec.fromJson(rawDocument)
+          // 兼容早期版本：只有 aspectRatio，没有 document。
+          : DocumentSpec.fromLegacyAspect(
+              (json['aspectRatio'] as num?)?.toDouble(),
+            ),
+    );
+  }
 
   DrawingProject copyWith({
     String? name,
     DateTime? updatedAt,
-    double? aspectRatio,
+    DocumentSpec? document,
   }) =>
       DrawingProject(
         id: id,
         name: name ?? this.name,
         createdAt: createdAt,
         updatedAt: updatedAt ?? this.updatedAt,
-        aspectRatio: aspectRatio ?? this.aspectRatio,
+        document: document ?? this.document,
       );
 }

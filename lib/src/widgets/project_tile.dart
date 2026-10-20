@@ -56,6 +56,16 @@ class ProjectTile extends StatelessWidget {
                   ),
                   const SizedBox(height: 4),
                   Text(
+                    '${project.document.widthPx} × ${project.document.heightPx} px'
+                    ' · ${project.document.dpi.toStringAsFixed(0)} ppi',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: theme.textTheme.bodySmall?.copyWith(
+                      color: theme.colorScheme.onSurfaceVariant,
+                    ),
+                  ),
+                  const SizedBox(height: 2),
+                  Text(
                     _updatedLabel,
                     style: theme.textTheme.bodySmall
                         ?.copyWith(color: theme.colorScheme.onSurfaceVariant),

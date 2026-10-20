@@ -5,6 +5,7 @@ import '../services/project_store.dart';
 import '../widgets/app_icon.dart';
 import '../widgets/project_tile.dart';
 import 'canvas_screen.dart';
+import 'new_document_screen.dart';
 import 'sections/about_section.dart';
 import 'sections/settings_section.dart';
 
@@ -41,9 +42,15 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Future<void> _createProject() async {
-    final name = await _promptProjectName();
-    if (name == null || name.trim().isEmpty) return;
-    final project = await _store.createProject(name.trim());
+    // 先设定画布模板与规格，再建工程：参数是工程的固有属性，不能事后补。
+    final result = await Navigator.of(context).push<NewDocumentResult>(
+      MaterialPageRoute<NewDocumentResult>(
+        builder: (_) => const NewDocumentScreen(),
+      ),
+    );
+    if (result == null || !mounted) return;
+
+    final project = await _store.createProject(result.name, result.document);
     if (!mounted) return;
     await _openProject(project);
   }
@@ -55,35 +62,6 @@ class _HomeScreenState extends State<HomeScreen> {
       ),
     );
     await _reload(); // 返回后刷新更新时间
-  }
-
-  Future<String?> _promptProjectName() {
-    final controller = TextEditingController();
-    return showDialog<String>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('新建工程'),
-        content: TextField(
-          controller: controller,
-          autofocus: true,
-          decoration: const InputDecoration(
-            labelText: '工程名称',
-            hintText: '例如：我的第一幅画',
-          ),
-          onSubmitted: (value) => Navigator.of(context).pop(value),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(),
-            child: const Text('取消'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.of(context).pop(controller.text),
-            child: const Text('创建'),
-          ),
-        ],
-      ),
-    );
   }
 
   @override
