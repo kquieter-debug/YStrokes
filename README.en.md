@@ -15,7 +15,8 @@ A vector-stroke drawing app for Android, built around how a stroke actually feel
 - **Document setup**: pick a size, resolution, and background when creating a document (A4 / A5 / phone / square presets included); the spec is saved with the project and never changes with the device.
 - **Incremental smoothing**: smoothing happens as samples arrive. The point list committed on pen-up is bit-for-bit what was on screen — no flicker, no shape shift.
 - **Durable writes**: atomic write (temp file + rename) means a process kill never leaves a truncated document; damaged documents recover partially instead of failing outright.
-- **Undoable**: both adding a stroke and clearing the canvas can be undone.
+- **Undoable**: adding strokes, erasing, and clearing the canvas can all be undone.
+- **Tools**: brush and eraser. Erasing is recorded as a stroke, so undo comes for free and the document never has to store a bitmap.
 
 ## Tech stack
 
@@ -107,11 +108,12 @@ Document format (all little-endian):
 
 ```
 header : "YSTK"(4) | version u16 | stroke_count u32
-stroke : id u32 | color u32 | width f32 | point_count u32
+stroke : id u32 | color u32 | width f32 | point_count u32 | tool u8
 point  : x f32 | y f32 | pressure f32 | timestamp_ms u32
 ```
 
 Coordinates are stored as f32: normalized values live in 0–1, absolute precision is about 6e-8 — far below visible error — and the payload is half the size.
+The format is v2 (each stroke carries a `tool` byte); the decoder still reads v1, treating those strokes as brush.
 
 ### Stroke processing
 
@@ -125,7 +127,7 @@ The canvas is built from three layers, bottom to top:
 
 1. **Pasteboard**: the area outside the document.
 2. **Document**: the paper surface, centered and sized by the project's own aspect ratio. Strokes are only drawn here.
-3. **Tool panel**: floating against the right edge, arranged vertically in two columns, sized adaptively from the screen's short side.
+3. **Tool panel**: floating against the left edge, split into tool / color / size sections, all laid out in two columns and sized adaptively from the screen's short side.
 
 The panel is an overlay, not a layout element, so making it wider or narrower never squeezes or rescales the document. The document rectangle depends only on the document aspect ratio and the available area. That ratio comes from the document spec chosen at creation time (`DocumentSpec`) and is saved with the project, so rotating the device or switching devices never changes the document's shape.
 
