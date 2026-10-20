@@ -6,6 +6,7 @@ import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
 
 import '../models/project.dart';
+import '../models/tool_settings.dart';
 import '../rust/api/stroke.dart' as rust;
 import '../rust/api/tools.dart';
 import '../services/canvas_geometry.dart';
@@ -14,6 +15,7 @@ import '../services/drawing_engine.dart';
 import '../services/project_store.dart';
 import '../services/stroke_smoother.dart';
 import '../widgets/app_icon.dart';
+import '../widgets/tool_settings_sheet.dart';
 
 /// 工程画板。
 ///
@@ -49,11 +51,23 @@ class _CanvasScreenState extends State<CanvasScreen>
       widget.documentStore ?? DocumentStore();
   final ProjectStore _projectStore = ProjectStore();
 
-  /// 当前画笔颜色（ARGB）。
-  Color _color = const Color(0xFF000000);
-
   /// 当前工具。
   ToolKind _tool = ToolKind.brush;
+
+  /// 各工具各自的参数。切回某工具时，它上次用的颜色与笔宽仍在。
+  final Map<ToolKind, ToolSettings> _settings = <ToolKind, ToolSettings>{
+    ToolKind.brush: const ToolSettings(
+      color: Color(0xFF000000),
+      widthRatio: 0.01,
+    ),
+    // 橡皮默认比画笔粗一些：擦除时更省力，也需要更明显的视觉反馈。
+    ToolKind.eraser: const ToolSettings(
+      color: Color(0xFF000000),
+      widthRatio: 0.03,
+    ),
+  };
+
+  ToolSettings get _activeSettings => _settings[_tool]!;
 
   /// 各工具的行为参数，进入画板时从 Rust 读取一次并缓存。
   ///
@@ -76,9 +90,6 @@ class _CanvasScreenState extends State<CanvasScreen>
   };
 
   ToolProfile get _profile => _profiles[_tool] ?? _fallbackProfiles[_tool]!;
-
-  /// 当前笔宽在 [_widthRatios] 中的下标。
-  int _widthIndex = 1;
 
   /// 当前笔画的增量平滑器；为空表示没有正在绘制的笔画。
   StrokeSmoother? _smoother;
@@ -128,20 +139,6 @@ class _CanvasScreenState extends State<CanvasScreen>
 
   /// 自动保存节流窗口：抬笔后静置该时长才落盘，避免每笔都写文件。
   static const Duration _saveDebounce = Duration(milliseconds: 800);
-
-  static const List<Color> _palette = [
-    Color(0xFF000000), // 黑
-    Color(0xFFEF4444), // 红
-    Color(0xFF3B82F6), // 蓝
-    Color(0xFF22C55E), // 绿
-    Color(0xFFF97316), // 橙
-    Color(0xFFFFFFFF), // 白
-  ];
-
-  /// 笔宽档位：归一化比例（相对文档短边），对应 400dp 文档上的 2/4/8/16dp。
-  static const List<double> _widthRatios = [0.005, 0.01, 0.02, 0.04];
-
-  double get _widthRatio => _widthRatios[_widthIndex];
 
   @override
   void initState() {
@@ -369,8 +366,8 @@ class _CanvasScreenState extends State<CanvasScreen>
       _engine.addStroke(
         points,
         tool: _tool,
-        color: _color.toARGB32(),
-        widthRatio: _widthRatio,
+        color: _activeSettings.color.toARGB32(),
+        widthRatio: _activeSettings.widthRatio,
       );
     });
     _scheduleSave();
@@ -541,17 +538,39 @@ class _CanvasScreenState extends State<CanvasScreen>
       child: Center(
         child: _BrushPanel(
           metrics: metrics,
-          palette: _palette,
-          widthRatios: _widthRatios,
-          selectedColor: _color,
           selectedTool: _tool,
-          widthIndex: _widthIndex,
-          onSelectColor: (color) => setState(() => _color = color),
-          onSelectTool: (tool) => setState(() => _tool = tool),
-          onSelectWidth: (index) => setState(() => _widthIndex = index),
+          onSelectTool: _selectTool,
+          onLongPressTool: _openToolSettings,
         ),
       ),
     );
+  }
+
+  /// 选中工具。再次点按当前工具时打开它的设置——长按是显式入口，
+  /// 点按已激活工具是符合直觉的隐含入口，两者都指向同一个面板。
+  void _selectTool(ToolKind tool) {
+    if (tool == _tool) {
+      unawaited(_openToolSettings(tool));
+      return;
+    }
+    setState(() => _tool = tool);
+  }
+
+  /// 长按工具：打开该工具的参数面板（颜色、粗细）。
+  Future<void> _openToolSettings(ToolKind tool) async {
+    final result = await showModalBottomSheet<ToolSettings>(
+      context: context,
+      isScrollControlled: true,
+      showDragHandle: true,
+      builder: (_) => ToolSettingsSheet(
+        tool: tool,
+        initial: _settings[tool]!,
+      ),
+    );
+    if (result == null || !mounted) return;
+    setState(() => _settings[tool] = result);
+    // 保底刷新：即便设置没变，也让界面重新读取一次当前参数。
+    _activeRevision++;
   }
 
   Widget _buildCanvas() {
@@ -591,8 +610,8 @@ class _CanvasScreenState extends State<CanvasScreen>
                 painter: _ActiveStrokePainter(
                   points: _activePoints,
                   revision: _activeRevision,
-                  color: _color.toARGB32(),
-                  width: _widthRatio * rect.shortestSide,
+                  color: _activeSettings.color.toARGB32(),
+                  width: _activeSettings.widthRatio * rect.shortestSide,
                   rect: rect,
                   erase: erasing,
                   basePicture: picture,
@@ -814,32 +833,22 @@ class _ToolbarMetrics {
   final double radius;
 }
 
-/// 悬浮工具面板：左侧竖向停靠，所有区块统一两列。
+/// 悬浮工具面板：左侧竖向停靠，只承载「工具」这一层。
 ///
-/// 分区顺序与 Photoshop 一致：工具 → 颜色 → 尺寸。新增工具只需往工具区块的
-/// 列表里加一项，网格会自动排布。
+/// 颜色与粗细不再常驻——它们属于工具参数，长按工具图标后在该工具的设置面板里
+/// 调整。这样工具栏的长度只与工具数量相关，新增工具时不会越堆越长。
 class _BrushPanel extends StatelessWidget {
   const _BrushPanel({
     required this.metrics,
-    required this.palette,
-    required this.widthRatios,
-    required this.selectedColor,
     required this.selectedTool,
-    required this.widthIndex,
-    required this.onSelectColor,
     required this.onSelectTool,
-    required this.onSelectWidth,
+    required this.onLongPressTool,
   });
 
   final _ToolbarMetrics metrics;
-  final List<Color> palette;
-  final List<double> widthRatios;
-  final Color selectedColor;
   final ToolKind selectedTool;
-  final int widthIndex;
-  final ValueChanged<Color> onSelectColor;
   final ValueChanged<ToolKind> onSelectTool;
-  final ValueChanged<int> onSelectWidth;
+  final ValueChanged<ToolKind> onLongPressTool;
 
   static const int _columns = 2;
 
@@ -870,43 +879,18 @@ class _BrushPanel extends StatelessWidget {
                   selected: tool.kind == selectedTool,
                   metrics: metrics,
                   onTap: () => onSelectTool(tool.kind),
+                  onLongPress: () => onLongPressTool(tool.kind),
                 ),
             ]),
-            _buildDivider(theme),
-            _buildGrid(<Widget>[
-              for (final color in palette)
-                _ColorCell(
-                  color: color,
-                  selected: color.toARGB32() == selectedColor.toARGB32(),
-                  metrics: metrics,
-                  onTap: () => onSelectColor(color),
-                ),
-            ]),
-            _buildDivider(theme),
-            _buildGrid(<Widget>[
-              for (var i = 0; i < widthRatios.length; i++)
-                _WidthCell(
-                  ratio: widthRatios[i],
-                  selected: i == widthIndex,
-                  metrics: metrics,
-                  onTap: () => onSelectWidth(i),
-                ),
-            ]),
+            SizedBox(height: metrics.gap * 0.6),
+            Text(
+              '长按设置',
+              style: theme.textTheme.labelSmall?.copyWith(
+                color: theme.colorScheme.onSurfaceVariant,
+                fontSize: 9,
+              ),
+            ),
           ],
-        ),
-      ),
-    );
-  }
-
-  Widget _buildDivider(ThemeData theme) {
-    return Padding(
-      padding: EdgeInsets.symmetric(vertical: metrics.gap),
-      child: SizedBox(
-        width: metrics.cell * _columns + metrics.gap,
-        child: Divider(
-          height: 1,
-          thickness: 1,
-          color: theme.colorScheme.outlineVariant,
         ),
       ),
     );
@@ -941,6 +925,7 @@ class _ToolCell extends StatelessWidget {
     required this.selected,
     required this.metrics,
     required this.onTap,
+    required this.onLongPress,
   });
 
   final String icon;
@@ -948,6 +933,7 @@ class _ToolCell extends StatelessWidget {
   final bool selected;
   final _ToolbarMetrics metrics;
   final VoidCallback onTap;
+  final VoidCallback onLongPress;
 
   @override
   Widget build(BuildContext context) {
@@ -959,6 +945,7 @@ class _ToolCell extends StatelessWidget {
       message: label,
       child: InkWell(
         onTap: onTap,
+        onLongPress: onLongPress,
         customBorder: const CircleBorder(),
         child: SizedBox(
           width: metrics.cell,
@@ -982,90 +969,6 @@ class _ToolCell extends StatelessWidget {
                   semanticLabel: label,
                 ),
               ),
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-/// 颜色格。
-class _ColorCell extends StatelessWidget {
-  const _ColorCell({
-    required this.color,
-    required this.selected,
-    required this.metrics,
-    required this.onTap,
-  });
-
-  final Color color;
-  final bool selected;
-  final _ToolbarMetrics metrics;
-  final VoidCallback onTap;
-
-  @override
-  Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
-    final diameter = metrics.cell * 0.66;
-    return InkWell(
-      onTap: onTap,
-      customBorder: const CircleBorder(),
-      child: SizedBox(
-        width: metrics.cell,
-        height: metrics.cell,
-        child: Center(
-          child: AnimatedContainer(
-            duration: const Duration(milliseconds: 120),
-            width: diameter,
-            height: diameter,
-            decoration: BoxDecoration(
-              color: color,
-              shape: BoxShape.circle,
-              border: Border.all(
-                color: selected ? scheme.primary : scheme.outlineVariant,
-                width: selected ? 2.5 : 1,
-              ),
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-/// 笔宽格：圆点直径按真实笔宽等比缩放，选中时以主色区分。
-class _WidthCell extends StatelessWidget {
-  const _WidthCell({
-    required this.ratio,
-    required this.selected,
-    required this.metrics,
-    required this.onTap,
-  });
-
-  final double ratio;
-  final bool selected;
-  final _ToolbarMetrics metrics;
-  final VoidCallback onTap;
-
-  @override
-  Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
-    // 520 是把归一化比例放大到格内可感知尺寸的经验系数。
-    final dot = (ratio * 520).clamp(4.0, metrics.cell * 0.62);
-    return InkWell(
-      onTap: onTap,
-      customBorder: const CircleBorder(),
-      child: SizedBox(
-        width: metrics.cell,
-        height: metrics.cell,
-        child: Center(
-          child: Container(
-            width: dot,
-            height: dot,
-            decoration: BoxDecoration(
-              color: selected ? scheme.primary : scheme.onSurfaceVariant,
-              shape: BoxShape.circle,
             ),
           ),
         ),
