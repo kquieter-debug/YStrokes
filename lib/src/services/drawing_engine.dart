@@ -1,58 +1,97 @@
 import 'dart:math' as math;
 
+import '../models/layer.dart';
 import '../models/stroke.dart';
 import '../rust/api/stroke.dart' as rust;
 import '../rust/api/tools.dart';
 
-/// 画板引擎：管理笔画列表与撤销/重做栈。
+/// 画板引擎：管理图层、笔画与撤销/重做栈。
 ///
 /// 职责划分：
 /// - 几何平滑在采集阶段由 `StrokeSmoother` 增量完成（见该类注释）。
-/// - 本类只维护会话状态：笔画顺序、撤销/重做、版本号。
+/// - 本类只维护会话状态：图层顺序、当前图层、撤销/重做、版本号。
 /// - 持久化不在本类内：由 `DocumentStore` 负责 I/O，画板界面负责编排。
 ///
 /// `addStroke` 是**同步**的：绘画应用里「抬手」必须当帧完成提交，任何异步等待
 /// 都会表现为笔画消失一帧再出现。跨语言调用一律不进入输入热路径。
 class DrawingEngine {
-  final List<Stroke> _strokes = [];
-  final List<_Edit> _undoStack = [];
-  final List<_Edit> _redoStack = [];
+  /// 构造即保证「至少有一个图层」：界面在文档载入完成前就会读取
+  /// [activeLayer]（例如清空按钮的可用状态），不能让它处于空列表状态。
+  DrawingEngine() {
+    _ensureInitialLayer();
+  }
 
-  int _nextId = 0;
+  final List<DrawingLayer> _layers = <DrawingLayer>[];
+  final List<_Edit> _undoStack = <_Edit>[];
+  final List<_Edit> _redoStack = <_Edit>[];
 
-  /// 状态版本号：每次内容变化自增，供渲染层判断是否需要重建缓存。
+  String _activeLayerId = '';
+  int _nextLayerSeq = 0;
+  int _nextStrokeId = 0;
   int _revision = 0;
 
-  /// 当前可见笔画（只读视图；调用方无需关心内部结构）。
-  List<Stroke> get strokes => List.unmodifiable(_strokes);
+  /// 图层列表（自下而上，只读视图）。
+  List<DrawingLayer> get layers => List<DrawingLayer>.unmodifiable(_layers);
+
+  /// 当前图层。任何时刻至少存在一个图层。
+  DrawingLayer get activeLayer {
+    for (final layer in _layers) {
+      if (layer.id == _activeLayerId) return layer;
+    }
+    return _layers.first;
+  }
+
+  String get activeLayerId => activeLayer.id;
 
   /// 状态版本号，内容变化时递增。
   int get revision => _revision;
 
   bool get canUndo => _undoStack.isNotEmpty;
   bool get canRedo => _redoStack.isNotEmpty;
-  bool get isEmpty => _strokes.isEmpty;
-  int get strokeCount => _strokes.length;
 
-  /// 载入已持久化的笔画，重置撤销/重做历史。
+  /// 所有图层都没有内容。
+  bool get isEmpty => _layers.every((layer) => layer.strokes.isEmpty);
+
+  int get strokeCount =>
+      _layers.fold<int>(0, (sum, layer) => sum + layer.strokes.length);
+
+  /// 载入已持久化的图层，重置撤销/重做历史。
   ///
   /// 载入后不产生撤销记录：历史属于「本次会话」，跨会话撤销会把用户带回
-  /// 无法理解的状态。
-  void load(List<Stroke> strokes) {
-    _strokes
+  /// 无法理解的状态。图层 id 按顺序重新分配。
+  void load(List<DrawingLayer> layers) {
+    _layers
       ..clear()
-      ..addAll(strokes);
+      ..addAll(layers);
+    _ensureInitialLayer();
+
+    // 让图层序号越过已有 id：载入的图层形如 layer-N，若把序号重置为图层数量，
+    // 之后新建图层就会与已有 id 撞车（表现为选中/删除错层）。
+    var maxSeq = _nextLayerSeq;
+    for (final layer in _layers) {
+      final parsed = int.tryParse(layer.id.replaceFirst('layer-', ''));
+      if (parsed != null) maxSeq = math.max(maxSeq, parsed + 1);
+    }
+    _nextLayerSeq = maxSeq;
+
+    // 打开工程时选中顶层，与 Photoshop 的行为一致。
+    _activeLayerId = _layers.last.id;
+
     _undoStack.clear();
     _redoStack.clear();
-    _nextId = strokes.fold(0, (maxId, s) => math.max(maxId, s.id + 1));
+    _nextStrokeId = 0;
+    for (final layer in _layers) {
+      for (final stroke in layer.strokes) {
+        _nextStrokeId = math.max(_nextStrokeId, stroke.id + 1);
+      }
+    }
     _revision++;
   }
 
-  /// 提交一笔。
+  /// 提交一笔到当前图层。
   ///
   /// [points] 必须是 `StrokeSmoother.finish()` 的产出——即已经平滑、且与屏幕上
   /// 显示的点列完全一致，本类不再做任何几何加工。
-  /// [widthRatio] 为归一化笔宽（相对画布短边）。
   Stroke addStroke(
     List<rust.StrokePoint> points, {
     required ToolKind tool,
@@ -60,85 +99,229 @@ class DrawingEngine {
     required double widthRatio,
   }) {
     final stroke = Stroke(
-      id: _nextId++,
+      id: _nextStrokeId++,
       tool: tool,
       color: color,
       widthRatio: widthRatio,
       points: points,
     );
-    _strokes.add(stroke);
-    _undoStack.add(_AddEdit(stroke));
+    final layer = activeLayer;
+    layer.strokes.add(stroke);
+    _undoStack.add(_AddStrokeEdit(layer.id, stroke));
     _redoStack.clear();
     _revision++;
     return stroke;
   }
 
-  /// 撤销上一步；无历史时返回 false。
+  // ---- 图层操作 ----
+
+  /// 在当前图层上方新建图层并选中它。
+  DrawingLayer addLayer({String? name}) {
+    final layer = DrawingLayer(
+      id: 'layer-${_nextLayerSeq++}',
+      name: name ?? '图层 ${_layers.length + 1}',
+    );
+    final index = _layers.indexWhere((item) => item.id == _activeLayerId);
+    final insertAt = index < 0 ? _layers.length : index + 1;
+    final previousActive = _activeLayerId;
+
+    _layers.insert(insertAt, layer);
+    _activeLayerId = layer.id;
+    _undoStack.add(_AddLayerEdit(layer, insertAt, previousActive));
+    _redoStack.clear();
+    _revision++;
+    return layer;
+  }
+
+  /// 删除图层。只剩一个图层时拒绝删除（文档必须至少有一层）。
+  bool removeLayer(String id) {
+    if (_layers.length <= 1) return false;
+    final index = _layers.indexWhere((layer) => layer.id == id);
+    if (index < 0) return false;
+
+    final layer = _layers[index];
+    final previousActive = _activeLayerId;
+    _layers.removeAt(index);
+
+    if (_activeLayerId == id) {
+      // 选中被删图层的下一层；删的是顶层则回落到新的顶层。
+      _activeLayerId = _layers[math.min(index, _layers.length - 1)].id;
+    }
+
+    _undoStack.add(_RemoveLayerEdit(layer, index, previousActive));
+    _redoStack.clear();
+    _revision++;
+    return true;
+  }
+
+  void selectLayer(String id) {
+    if (_activeLayerId == id) return;
+    if (!_layers.any((layer) => layer.id == id)) return;
+    _activeLayerId = id;
+    _revision++;
+  }
+
+  /// 调整不透明度。拖动滑杆会高频调用，因此不进入撤销栈。
+  void setLayerOpacity(String id, double opacity) {
+    final layer = _layerById(id);
+    if (layer == null) return;
+    final next = opacity.clamp(0.0, 1.0);
+    if (layer.opacity == next) return;
+    layer.opacity = next;
+    _revision++;
+  }
+
+  /// 切换可见性。同样不进入撤销栈：它更像「视图开关」而非内容编辑。
+  void setLayerVisible(String id, bool visible) {
+    final layer = _layerById(id);
+    if (layer == null || layer.visible == visible) return;
+    layer.visible = visible;
+    _revision++;
+  }
+
+  // ---- 撤销 / 重做 ----
+
   bool undo() {
     if (_undoStack.isEmpty) return false;
     final edit = _undoStack.removeLast();
-    edit.undo(_strokes);
+    edit.undo(this);
     _redoStack.add(edit);
     _revision++;
     return true;
   }
 
-  /// 重做最近撤销的一步；无历史时返回 false。
   bool redo() {
     if (_redoStack.isEmpty) return false;
     final edit = _redoStack.removeLast();
-    edit.redo(_strokes);
+    edit.redo(this);
     _undoStack.add(edit);
     _revision++;
     return true;
   }
 
-  /// 清空画布。此操作可撤销——误触清空不应造成不可逆损失。
+  /// 清空当前图层。此操作可撤销——误触清空不应造成不可逆损失。
   bool clear() {
-    if (_strokes.isEmpty) return false;
-    _undoStack.add(_ClearEdit(List<Stroke>.of(_strokes)));
+    final layer = activeLayer;
+    if (layer.strokes.isEmpty) return false;
+    _undoStack.add(_ClearLayerEdit(layer.id, List<Stroke>.of(layer.strokes)));
     _redoStack.clear();
-    _strokes.clear();
+    layer.strokes.clear();
     _revision++;
     return true;
+  }
+
+  // ---- 内部辅助 ----
+
+  void _ensureInitialLayer() {
+    if (_layers.isEmpty) {
+      final layer = DrawingLayer(id: 'layer-${_nextLayerSeq++}', name: '图层 1');
+      _layers.add(layer);
+      _activeLayerId = layer.id;
+    }
+    if (_activeLayerId.isEmpty ||
+        !_layers.any((layer) => layer.id == _activeLayerId)) {
+      _activeLayerId = _layers.last.id;
+    }
+  }
+
+  DrawingLayer? _layerById(String id) {
+    for (final layer in _layers) {
+      if (layer.id == id) return layer;
+    }
+    return null;
   }
 }
 
 /// 可撤销的编辑操作。
+///
+/// 操作直接持有引擎引用：图层的增删会改变索引，仅凭「笔画列表」无法定位，
+/// 因此这里以图层 id 作为寻址依据。
 abstract class _Edit {
-  void undo(List<Stroke> strokes);
-  void redo(List<Stroke> strokes);
+  void undo(DrawingEngine engine);
+  void redo(DrawingEngine engine);
 }
 
-/// 新增一笔。
-class _AddEdit implements _Edit {
-  _AddEdit(this.stroke);
+class _AddStrokeEdit implements _Edit {
+  _AddStrokeEdit(this.layerId, this.stroke);
 
+  final String layerId;
   final Stroke stroke;
 
   @override
-  void undo(List<Stroke> strokes) {
-    // 正常情况下新增的笔画总在末尾；若因外部载入导致位置变化，退化为按 id 查找。
-    if (strokes.isNotEmpty && strokes.last.id == stroke.id) {
-      strokes.removeLast();
+  void undo(DrawingEngine engine) {
+    final layer = engine._layerById(layerId);
+    if (layer == null) return;
+    if (layer.strokes.isNotEmpty && layer.strokes.last.id == stroke.id) {
+      layer.strokes.removeLast();
     } else {
-      strokes.removeWhere((s) => s.id == stroke.id);
+      layer.strokes.removeWhere((item) => item.id == stroke.id);
     }
   }
 
   @override
-  void redo(List<Stroke> strokes) => strokes.add(stroke);
+  void redo(DrawingEngine engine) {
+    engine._layerById(layerId)?.strokes.add(stroke);
+  }
 }
 
-/// 清空画布，撤销时整批恢复。
-class _ClearEdit implements _Edit {
-  _ClearEdit(this.removed);
+class _ClearLayerEdit implements _Edit {
+  _ClearLayerEdit(this.layerId, this.removed);
 
+  final String layerId;
   final List<Stroke> removed;
 
   @override
-  void undo(List<Stroke> strokes) => strokes.addAll(removed);
+  void undo(DrawingEngine engine) {
+    engine._layerById(layerId)?.strokes.addAll(removed);
+  }
 
   @override
-  void redo(List<Stroke> strokes) => strokes.clear();
+  void redo(DrawingEngine engine) {
+    engine._layerById(layerId)?.strokes.clear();
+  }
+}
+
+class _AddLayerEdit implements _Edit {
+  _AddLayerEdit(this.layer, this.index, this.previousActiveId);
+
+  final DrawingLayer layer;
+  final int index;
+  final String previousActiveId;
+
+  @override
+  void undo(DrawingEngine engine) {
+    engine._layers.removeWhere((item) => item.id == layer.id);
+    engine._activeLayerId = previousActiveId;
+  }
+
+  @override
+  void redo(DrawingEngine engine) {
+    final at = index.clamp(0, engine._layers.length);
+    engine._layers.insert(at, layer);
+    engine._activeLayerId = layer.id;
+  }
+}
+
+class _RemoveLayerEdit implements _Edit {
+  _RemoveLayerEdit(this.layer, this.index, this.previousActiveId);
+
+  final DrawingLayer layer;
+  final int index;
+  final String previousActiveId;
+
+  @override
+  void undo(DrawingEngine engine) {
+    final at = index.clamp(0, engine._layers.length);
+    engine._layers.insert(at, layer);
+    engine._activeLayerId = previousActiveId;
+  }
+
+  @override
+  void redo(DrawingEngine engine) {
+    engine._layers.removeWhere((item) => item.id == layer.id);
+    if (engine._activeLayerId == layer.id && engine._layers.isNotEmpty) {
+      engine._activeLayerId =
+          engine._layers[math.min(index, engine._layers.length - 1)].id;
+    }
+  }
 }

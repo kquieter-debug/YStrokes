@@ -3,7 +3,7 @@ import 'dart:typed_data';
 
 import 'package:path_provider/path_provider.dart';
 
-import '../models/stroke.dart';
+import '../models/layer.dart';
 import '../rust/api/document.dart' as rust;
 
 /// 笔画数据的文件存储。
@@ -32,27 +32,34 @@ class DocumentStore {
   final Directory? _rootOverride;
   Directory? _resolvedRoot;
 
-  /// 读取笔画；文件不存在时返回空文档而非抛错（新建工程属正常情况）。
-  Future<StoredDocument> loadStrokes(String projectId) async {
+  /// 读取图层；文件不存在时返回空文档而非抛错（新建工程属正常情况）。
+  Future<StoredDocument> loadDocument(String projectId) async {
     final file = await _fileFor(projectId);
     if (!await file.exists()) {
-      return const StoredDocument(strokes: <Stroke>[]);
+      return const StoredDocument(layers: <DrawingLayer>[]);
     }
     final bytes = await file.readAsBytes();
     if (bytes.isEmpty) {
-      return const StoredDocument(strokes: <Stroke>[]);
+      return const StoredDocument(layers: <DrawingLayer>[]);
     }
     final outcome = await rust.decodeDocument(bytes: bytes);
     return StoredDocument(
-      strokes: outcome.strokes.map(Stroke.fromRust).toList(),
+      // 图层 id 不落盘：按顺序重新分配，保证会话内唯一即可。
+      layers: <DrawingLayer>[
+        for (var i = 0; i < outcome.layers.length; i++)
+          DrawingLayer.fromRust(outcome.layers[i], id: 'layer-$i'),
+      ],
       error: outcome.error,
     );
   }
 
-  /// 编码并原子写入全部笔画。
-  Future<void> saveStrokes(String projectId, List<Stroke> strokes) async {
+  /// 编码并原子写入全部图层。
+  Future<void> saveDocument(
+    String projectId,
+    List<DrawingLayer> layers,
+  ) async {
     final encoded = await rust.encodeDocument(
-      strokes: strokes.map((s) => s.toRust()).toList(),
+      layers: layers.map((layer) => layer.toRust()).toList(),
     );
     await writeBytes(projectId, encoded);
   }
@@ -101,7 +108,7 @@ class DocumentStore {
     }
   }
 
-  /// 删除工程对应的笔画目录（删除工程时调用）。
+  /// 删除工程对应的文档目录（删除工程时调用）。
   Future<void> deleteStrokes(String projectId) async {
     final dir = await _dirFor(projectId);
     if (await dir.exists()) {
@@ -109,7 +116,7 @@ class DocumentStore {
     }
   }
 
-  /// 是否已存在笔画文件（用于列表页判断有无内容）。
+  /// 是否已存在文档文件（用于列表页判断有无内容）。
   Future<bool> hasStrokes(String projectId) async {
     final file = await _fileFor(projectId);
     return file.exists();
@@ -161,12 +168,12 @@ class DocumentStore {
   }
 }
 
-/// 读取结果：`error` 非空表示文档损坏，此时 [strokes] 为已恢复的部分。
+/// 读取结果：`error` 非空表示文档损坏，此时 [layers] 为已恢复的部分。
 class StoredDocument {
-  const StoredDocument({required this.strokes, this.error});
+  const StoredDocument({required this.layers, this.error});
 
-  final List<Stroke> strokes;
+  final List<DrawingLayer> layers;
   final String? error;
 
-  bool get isEmpty => strokes.isEmpty;
+  bool get isEmpty => layers.every((layer) => layer.isEmpty);
 }

@@ -8,35 +8,74 @@ import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 import 'stroke.dart';
 import 'tools.dart';
 
-// These functions are ignored because they are not marked as `pub`: `read_f32`, `read_u16`, `read_u32`
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `clone`, `eq`, `fmt`
+// These functions are ignored because they are not marked as `pub`: `decode_flat`, `decode_layers`, `read_f32`, `read_stroke`, `read_u16`, `read_u32`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `clone`, `clone`, `eq`, `eq`, `fmt`, `fmt`
 
-/// 把笔画序列编码为字节流，供前端原子写入磁盘。
-Future<Uint8List> encodeDocument({required List<Stroke> strokes}) =>
-    RustLib.instance.api.crateApiDocumentEncodeDocument(strokes: strokes);
+/// 把图层序列编码为字节流，供前端原子写入磁盘。
+Future<Uint8List> encodeDocument({required List<Layer> layers}) =>
+    RustLib.instance.api.crateApiDocumentEncodeDocument(layers: layers);
 
-/// 把字节流解码为笔画列表；损坏时尽可能恢复已解析的部分。
+/// 把字节流解码为图层列表；损坏时尽可能恢复已解析的部分。
 Future<DecodeOutcome> decodeDocument({required List<int> bytes}) =>
     RustLib.instance.api.crateApiDocumentDecodeDocument(bytes: bytes);
 
 /// 文档解码结果。
 ///
-/// 解码采用「部分恢复」策略：文档截断或尾部损坏时，保留此前已完整解析的笔画，
+/// 解码采用「部分恢复」策略：文档截断或尾部损坏时，保留此前已完整解析的图层，
 /// 并通过 `error` 说明原因。对绘画应用而言，「保住大部分作品」优于「全有或全无」。
 class DecodeOutcome {
-  final List<Stroke> strokes;
+  final List<Layer> layers;
   final String? error;
 
-  const DecodeOutcome({required this.strokes, this.error});
+  const DecodeOutcome({required this.layers, this.error});
 
   @override
-  int get hashCode => strokes.hashCode ^ error.hashCode;
+  int get hashCode => layers.hashCode ^ error.hashCode;
 
   @override
   bool operator ==(Object other) =>
       identical(this, other) ||
       other is DecodeOutcome &&
           runtimeType == other.runtimeType &&
-          strokes == other.strokes &&
+          layers == other.layers &&
           error == other.error;
+}
+
+/// 一个图层。
+///
+/// 图层顺序即绘制顺序：索引 0 在最底层。
+class Layer {
+  final String name;
+
+  /// 不透明度，0.0 ~ 1.0。
+  final double opacity;
+
+  /// 是否参与合成。
+  final bool visible;
+  final List<Stroke> strokes;
+
+  const Layer({
+    required this.name,
+    required this.opacity,
+    required this.visible,
+    required this.strokes,
+  });
+
+  // HINT: Make it `#[frb(sync)]` to let it become the default constructor of Dart class.
+  static Future<Layer> newInstance({required String name}) =>
+      RustLib.instance.api.crateApiDocumentLayerNew(name: name);
+
+  @override
+  int get hashCode =>
+      name.hashCode ^ opacity.hashCode ^ visible.hashCode ^ strokes.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is Layer &&
+          runtimeType == other.runtimeType &&
+          name == other.name &&
+          opacity == other.opacity &&
+          visible == other.visible &&
+          strokes == other.strokes;
 }

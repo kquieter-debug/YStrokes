@@ -5,6 +5,7 @@ import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
 
+import '../models/layer.dart';
 import '../models/project.dart';
 import '../models/tool_settings.dart';
 import '../rust/api/stroke.dart' as rust;
@@ -15,6 +16,7 @@ import '../services/drawing_engine.dart';
 import '../services/project_store.dart';
 import '../services/stroke_smoother.dart';
 import '../widgets/app_icon.dart';
+import '../widgets/layers_sheet.dart';
 import '../widgets/tool_settings_sheet.dart';
 
 /// 工程画板。
@@ -185,9 +187,9 @@ class _CanvasScreenState extends State<CanvasScreen>
 
   Future<void> _loadDocument() async {
     try {
-      final stored = await _documentStore.loadStrokes(widget.project.id);
+      final stored = await _documentStore.loadDocument(widget.project.id);
       if (!mounted) return;
-      _engine.load(stored.strokes);
+      _engine.load(stored.layers);
       setState(() {
         _loading = false;
         _loadWarning = stored.error;
@@ -215,7 +217,7 @@ class _CanvasScreenState extends State<CanvasScreen>
     final revisionAtStart = _engine.revision;
 
     try {
-      await _documentStore.saveStrokes(widget.project.id, _engine.strokes);
+      await _documentStore.saveDocument(widget.project.id, _engine.layers);
       await _projectStore.touchProject(widget.project.id);
       // 缩略图与保存解耦：算完再写，不阻塞落盘主流程。
       unawaited(_refreshThumbnail());
@@ -280,22 +282,12 @@ class _CanvasScreenState extends State<CanvasScreen>
 
     final recorder = ui.PictureRecorder();
     final canvas = Canvas(recorder);
-    canvas.drawRect(rect, Paint()..color = Color(document.backgroundArgb));
-
-    final strokes = _engine.strokes;
-    final layered = strokes.any((stroke) => stroke.isEraser);
-    if (layered) canvas.saveLayer(rect, Paint());
-    for (final stroke in strokes) {
-      _paintStroke(
-        canvas,
-        rect,
-        stroke.points,
-        stroke.color,
-        stroke.widthInPixels(rect.shortestSide),
-        erase: stroke.isEraser,
-      );
-    }
-    if (layered) canvas.restore();
+    _paintDocument(
+      canvas,
+      rect,
+      Color(document.backgroundArgb),
+      _engine.layers,
+    );
 
     final picture = recorder.endRecording();
     try {
@@ -414,6 +406,28 @@ class _CanvasScreenState extends State<CanvasScreen>
     if (_engine.redo()) _onDocumentChanged();
   }
 
+  /// 打开图层面板。
+  ///
+  /// 面板直接改引擎状态，因此这里在每次变更后重绘并触发保存；
+  /// 面板关闭后再刷一次，确保缩略图与列表状态一致。
+  Future<void> _openLayers() async {
+    await showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      showDragHandle: true,
+      builder: (_) => LayersSheet(
+        engine: _engine,
+        onChanged: () {
+          setState(() {});
+          _scheduleSave();
+        },
+      ),
+    );
+    if (!mounted) return;
+    setState(() {});
+    _scheduleSave();
+  }
+
   void _clear() {
     if (!_engine.clear()) return;
     _onDocumentChanged();
@@ -423,7 +437,7 @@ class _CanvasScreenState extends State<CanvasScreen>
       ?..hideCurrentSnackBar()
       ..showSnackBar(
         SnackBar(
-          content: const Text('已清空画布'),
+          content: const Text('已清空当前图层'),
           action: SnackBarAction(label: '撤销', onPressed: _undo),
         ),
       );
@@ -441,6 +455,11 @@ class _CanvasScreenState extends State<CanvasScreen>
           title: Text(widget.project.name),
           actions: [
             IconButton(
+              onPressed: _openLayers,
+              tooltip: '图层',
+              icon: const Icon(Icons.layers_outlined),
+            ),
+            IconButton(
               onPressed: _engine.canUndo ? _undo : null,
               tooltip: '撤销',
               icon: const Icon(Icons.undo),
@@ -451,8 +470,9 @@ class _CanvasScreenState extends State<CanvasScreen>
               icon: const Icon(Icons.redo),
             ),
             IconButton(
-              onPressed: _engine.isEmpty ? null : _clear,
-              tooltip: '清空',
+              onPressed:
+                  _engine.activeLayer.strokes.isEmpty ? null : _clear,
+              tooltip: '清空当前图层',
               icon: const Icon(Icons.delete_outline),
             ),
           ],
@@ -583,7 +603,7 @@ class _CanvasScreenState extends State<CanvasScreen>
         _documentRect = rect;
 
         final picture = _ensurePicture(rect);
-        // 橡皮进行中：已完成的笔画必须并入同一个图层，实时擦除才看得见。
+        // 橡皮进行中必须重绘整个文档，实时擦除才看得见（见 _CanvasPainter）。
         final erasing = _tool == ToolKind.eraser && _smoother != null;
 
         return Listener(
@@ -595,26 +615,21 @@ class _CanvasScreenState extends State<CanvasScreen>
           child: Stack(
             fit: StackFit.expand,
             children: [
-              // 工作台：文档之外的区域。
+              // 工作台：文档之外的区域（不参与缩放，始终铺满）。
               ColoredBox(color: theme.colorScheme.surfaceContainerLowest),
-              // 文档：按工程规格居中的纸面，底色来自创建时选择的背景。
-              if (!rect.isEmpty)
-                Positioned.fromRect(
-                  rect: rect,
-                  child: ColoredBox(color: Color(document.backgroundArgb)),
-                ),
               CustomPaint(
-                painter: _CommittedPainter(picture, visible: !erasing),
-              ),
-              CustomPaint(
-                painter: _ActiveStrokePainter(
-                  points: _activePoints,
-                  revision: _activeRevision,
-                  color: _activeSettings.color.toARGB32(),
-                  width: _activeSettings.widthRatio * rect.shortestSide,
+                painter: _CanvasPainter(
+                  picture: picture,
                   rect: rect,
-                  erase: erasing,
-                  basePicture: picture,
+                  paperColor: Color(document.backgroundArgb),
+                  layers: _engine.layers,
+                  activeLayerId: _engine.activeLayerId,
+                  activeLayerOpacity: _engine.activeLayer.opacity,
+                  activePoints: _activePoints,
+                  activeColor: _activeSettings.color.toARGB32(),
+                  activeWidth: _activeSettings.widthRatio * rect.shortestSide,
+                  activeErase: erasing,
+                  activeRevision: _activeRevision,
                 ),
               ),
             ],
@@ -640,22 +655,12 @@ class _CanvasScreenState extends State<CanvasScreen>
     final recorder = ui.PictureRecorder();
     final canvas = Canvas(recorder);
     if (!rect.isEmpty) {
-      final strokes = _engine.strokes;
-      // 存在擦除笔画时必须成层：clear 混合只能作用于当前图层，
-      // 直接画在画布上会把下方的纸面一起擦穿。
-      final layered = strokes.any((stroke) => stroke.isEraser);
-      if (layered) canvas.saveLayer(rect, Paint());
-      for (final stroke in strokes) {
-        _paintStroke(
-          canvas,
-          rect,
-          stroke.points,
-          stroke.color,
-          stroke.widthInPixels(rect.shortestSide),
-          erase: stroke.isEraser,
-        );
-      }
-      if (layered) canvas.restore();
+      _paintDocument(
+        canvas,
+        rect,
+        Color(widget.project.document.backgroundArgb),
+        _engine.layers,
+      );
     }
     final picture = recorder.endRecording();
     _committedPicture = picture;
@@ -719,74 +724,149 @@ void _paintStroke(
   canvas.drawPath(path, strokePaint);
 }
 
-/// 已完成笔画：直接复用烘焙好的 [ui.Picture]。
+/// 绘制整篇文档：纸面 + 各图层。
 ///
-/// 橡皮进行时会被隐藏——此时由活动层把整幅画合并成一层再擦除，
-/// 否则「擦」的效果看不见（详见 [_ActiveStrokePainter]）。
-class _CommittedPainter extends CustomPainter {
-  const _CommittedPainter(this.picture, {required this.visible});
+/// 每个图层单独 `saveLayer`，原因是它同时承担两件事：
+/// 1. 合成不透明度——整层乘一个 alpha；
+/// 2. 隔离橡皮的 `BlendMode.clear`——擦除只能作用于本层，若直接画在画布上
+///    会把下方纸面甚至其它图层一起擦穿。
+///
+/// [activeLayerId] 指定时，会把 [activePoints] 当作该图层末尾的一笔一起绘制，
+/// 这样橡皮的实时预览发生在图层内部，效果与提交后一致。
+void _paintDocument(
+  Canvas canvas,
+  Rect rect,
+  Color paperColor,
+  List<DrawingLayer> layers, {
+  String? activeLayerId,
+  List<rust.StrokePoint> activePoints = const <rust.StrokePoint>[],
+  int activeColor = 0xFF000000,
+  double activeWidth = 1,
+  bool activeErase = false,
+}) {
+  canvas.drawRect(rect, Paint()..color = paperColor);
 
-  final ui.Picture picture;
-  final bool visible;
+  for (final layer in layers) {
+    if (!layer.visible || layer.opacity <= 0) continue;
 
-  @override
-  void paint(Canvas canvas, Size size) {
-    if (!visible) return;
-    canvas.drawPicture(picture);
+    final isActive = layer.id == activeLayerId;
+    final hasActive = isActive && activePoints.isNotEmpty;
+    if (layer.strokes.isEmpty && !hasActive) continue;
+
+    // 不透明度为 1 且没有擦除笔画时无需成层，省一次离屏绘制。
+    final needsLayer = layer.opacity < 0.999 ||
+        activeErase && isActive ||
+        layer.strokes.any((stroke) => stroke.isEraser);
+    if (needsLayer) {
+      canvas.saveLayer(
+        rect,
+        Paint()..color = Colors.black.withValues(alpha: layer.opacity),
+      );
+    }
+
+    for (final stroke in layer.strokes) {
+      _paintStroke(
+        canvas,
+        rect,
+        stroke.points,
+        stroke.color,
+        stroke.widthInPixels(rect.shortestSide),
+        erase: stroke.isEraser,
+      );
+    }
+    if (hasActive) {
+      _paintStroke(
+        canvas,
+        rect,
+        activePoints,
+        activeColor,
+        activeWidth,
+        erase: activeErase,
+      );
+    }
+
+    if (needsLayer) canvas.restore();
   }
-
-  @override
-  bool shouldRepaint(covariant _CommittedPainter oldDelegate) =>
-      oldDelegate.picture != picture || oldDelegate.visible != visible;
 }
 
-/// 正在绘制的一笔：每帧只重绘这一条路径。
+/// 画布内容的唯一绘制入口。
 ///
-/// 橡皮需要特殊处理：`BlendMode.clear` 只能擦掉**同一图层内**的像素。已完成的
-/// 笔画在另一张 picture 里，直接叠加 clear 只会把画布擦穿到背景色。因此擦除时
-/// 把「已完成的画 + 当前擦除路径」放进同一个图层，视觉上才是真的在擦纸上的墨。
-class _ActiveStrokePainter extends CustomPainter {
-  const _ActiveStrokePainter({
-    required this.points,
-    required this.revision,
-    required this.color,
-    required this.width,
+/// 两条路径：
+/// - **常规**：直接重放已烘焙的 [picture]（纸面 + 所有图层），再把活动笔画叠上去。
+///   活动笔画单独成层，是为了让它跟随所属图层的不透明度。
+/// - **擦除中**：必须整篇重绘。`BlendMode.clear` 只能擦掉同一图层内的像素，
+///   而活动笔画属于某个图层，只有把该层连同它一起重画，擦除才看得见。
+class _CanvasPainter extends CustomPainter {
+  const _CanvasPainter({
+    required this.picture,
     required this.rect,
-    required this.erase,
-    required this.basePicture,
+    required this.paperColor,
+    required this.layers,
+    required this.activeLayerId,
+    required this.activeLayerOpacity,
+    required this.activePoints,
+    required this.activeColor,
+    required this.activeWidth,
+    required this.activeErase,
+    required this.activeRevision,
   });
 
-  final List<rust.StrokePoint> points;
-  final int revision;
-  final int color;
-  final double width;
+  final ui.Picture picture;
   final Rect rect;
-  final bool erase;
-  final ui.Picture basePicture;
+  final Color paperColor;
+  final List<DrawingLayer> layers;
+  final String activeLayerId;
+  final double activeLayerOpacity;
+  final List<rust.StrokePoint> activePoints;
+  final int activeColor;
+  final double activeWidth;
+  final bool activeErase;
+  final int activeRevision;
 
   @override
   void paint(Canvas canvas, Size size) {
-    if (!erase) {
-      _paintStroke(canvas, rect, points, color, width);
+    if (rect.isEmpty) return;
+
+    if (activeErase) {
+      _paintDocument(
+        canvas,
+        rect,
+        paperColor,
+        layers,
+        activeLayerId: activeLayerId,
+        activePoints: activePoints,
+        activeColor: activeColor,
+        activeWidth: activeWidth,
+        activeErase: true,
+      );
       return;
     }
-    if (points.isEmpty || rect.isEmpty) return;
 
-    canvas.saveLayer(rect, Paint());
-    canvas.drawPicture(basePicture);
-    _paintStroke(canvas, rect, points, color, width, erase: true);
-    canvas.restore();
+    canvas.drawPicture(picture);
+    if (activePoints.isEmpty) return;
+
+    final needsLayer = activeLayerOpacity < 0.999;
+    if (needsLayer) {
+      canvas.saveLayer(
+        rect,
+        Paint()..color = Colors.black.withValues(alpha: activeLayerOpacity),
+      );
+    }
+    _paintStroke(canvas, rect, activePoints, activeColor, activeWidth);
+    if (needsLayer) canvas.restore();
   }
 
   @override
-  bool shouldRepaint(covariant _ActiveStrokePainter oldDelegate) =>
-      oldDelegate.revision != revision ||
-      oldDelegate.color != color ||
-      oldDelegate.width != width ||
+  bool shouldRepaint(covariant _CanvasPainter oldDelegate) =>
+      oldDelegate.picture != picture ||
       oldDelegate.rect != rect ||
-      oldDelegate.erase != erase ||
-      oldDelegate.basePicture != basePicture ||
-      !identical(oldDelegate.points, points);
+      oldDelegate.paperColor != paperColor ||
+      oldDelegate.activeLayerId != activeLayerId ||
+      oldDelegate.activeLayerOpacity != activeLayerOpacity ||
+      oldDelegate.activeColor != activeColor ||
+      oldDelegate.activeWidth != activeWidth ||
+      oldDelegate.activeErase != activeErase ||
+      oldDelegate.activeRevision != activeRevision;
 }
 
 /// 工具面板的尺寸方案：随屏幕短边自适应。
