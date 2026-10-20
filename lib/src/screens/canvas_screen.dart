@@ -1,4 +1,6 @@
 import 'dart:async';
+import 'dart:math' as math;
+import 'dart:typed_data';
 import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
@@ -118,6 +120,12 @@ class _CanvasScreenState extends State<CanvasScreen>
   bool _saving = false;
   Timer? _saveTimer;
 
+  /// 缩略图生成中的标记：避免上一次还没画完就又排一次。
+  bool _thumbnailBusy = false;
+
+  /// 缩略图长边上限（像素）。列表卡片不大，320 足够清晰且体积可控。
+  static const double _thumbnailMaxSide = 320;
+
   /// 自动保存节流窗口：抬笔后静置该时长才落盘，避免每笔都写文件。
   static const Duration _saveDebounce = Duration(milliseconds: 800);
 
@@ -212,6 +220,8 @@ class _CanvasScreenState extends State<CanvasScreen>
     try {
       await _documentStore.saveStrokes(widget.project.id, _engine.strokes);
       await _projectStore.touchProject(widget.project.id);
+      // 缩略图与保存解耦：算完再写，不阻塞落盘主流程。
+      unawaited(_refreshThumbnail());
       if (mounted && _saveError != null) {
         setState(() => _saveError = null);
       }
@@ -234,6 +244,74 @@ class _CanvasScreenState extends State<CanvasScreen>
   void _onDocumentChanged() {
     setState(() {});
     _scheduleSave();
+  }
+
+  // ---- 缩略图 ----
+
+  /// 重新生成工程缩略图。
+  ///
+  /// 只服务于列表预览，任何失败都不应影响作品本身，因此整体吞掉异常；
+  /// 同一时刻只允许一个任务，避免快速连笔时堆积。
+  Future<void> _refreshThumbnail() async {
+    if (_thumbnailBusy) return;
+    _thumbnailBusy = true;
+    try {
+      final bytes = await _renderThumbnailPng();
+      if (bytes != null) {
+        await _documentStore.saveThumbnail(widget.project.id, bytes);
+      }
+    } catch (_) {
+      // 忽略：缩略图不是关键路径。
+    } finally {
+      _thumbnailBusy = false;
+    }
+  }
+
+  /// 把当前文档渲染成 PNG 字节。
+  ///
+  /// 按文档长边缩放到 [_thumbnailMaxSide]，重绘全部笔画（含擦除），
+  /// 因此缩略图与画板所见一致。
+  Future<Uint8List?> _renderThumbnailPng() async {
+    final document = widget.project.document;
+    final longSide = math.max(document.widthPx, document.heightPx);
+    if (longSide <= 0) return null;
+
+    final scale = _thumbnailMaxSide / longSide;
+    final width = math.max(1, (document.widthPx * scale).round());
+    final height = math.max(1, (document.heightPx * scale).round());
+    final rect = Rect.fromLTWH(0, 0, width.toDouble(), height.toDouble());
+
+    final recorder = ui.PictureRecorder();
+    final canvas = Canvas(recorder);
+    canvas.drawRect(rect, Paint()..color = Color(document.backgroundArgb));
+
+    final strokes = _engine.strokes;
+    final layered = strokes.any((stroke) => stroke.isEraser);
+    if (layered) canvas.saveLayer(rect, Paint());
+    for (final stroke in strokes) {
+      _paintStroke(
+        canvas,
+        rect,
+        stroke.points,
+        stroke.color,
+        stroke.widthInPixels(rect.shortestSide),
+        erase: stroke.isEraser,
+      );
+    }
+    if (layered) canvas.restore();
+
+    final picture = recorder.endRecording();
+    try {
+      final image = await picture.toImage(width, height);
+      try {
+        final data = await image.toByteData(format: ui.ImageByteFormat.png);
+        return data?.buffer.asUint8List();
+      } finally {
+        image.dispose();
+      }
+    } finally {
+      picture.dispose();
+    }
   }
 
   // ---- 指针采集 ----

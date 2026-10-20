@@ -25,6 +25,7 @@ class DocumentStore {
   DocumentStore({Directory? rootDirectory}) : _rootOverride = rootDirectory;
 
   static const String _fileName = 'strokes.bin';
+  static const String _thumbnailName = 'thumb.png';
   static const String _tmpSuffix = '.tmp';
   static const String _libraryDirName = 'projects';
 
@@ -58,9 +59,22 @@ class DocumentStore {
 
   /// 直接读取原始字节；文件不存在时返回 null。
   Future<Uint8List?> readBytes(String projectId) async {
-    final file = await _fileFor(projectId);
+    final file = await _existingFileFor(projectId, _fileName);
     if (!await file.exists()) return null;
     return file.readAsBytes();
+  }
+
+  /// 读取工程缩略图；尚未生成时返回 null。
+  Future<Uint8List?> readThumbnail(String projectId) async {
+    final file = await _existingFileFor(projectId, _thumbnailName);
+    if (!await file.exists()) return null;
+    return file.readAsBytes();
+  }
+
+  /// 写入工程缩略图（PNG）。
+  Future<void> saveThumbnail(String projectId, Uint8List bytes) async {
+    final file = await _fileFor(projectId, _thumbnailName);
+    await _writeAtomically(file, bytes);
   }
 
   /// 原子写入原始字节。
@@ -69,6 +83,10 @@ class DocumentStore {
   /// 是原子操作，因此读者要么看到旧版本、要么看到新版本，不会读到半截数据。
   Future<void> writeBytes(String projectId, Uint8List bytes) async {
     final file = await _fileFor(projectId);
+    await _writeAtomically(file, bytes);
+  }
+
+  Future<void> _writeAtomically(File file, Uint8List bytes) async {
     final tmp = File('${file.path}$_tmpSuffix');
     await tmp.writeAsBytes(bytes, flush: true);
 
@@ -120,9 +138,16 @@ class DocumentStore {
     return dir;
   }
 
-  Future<File> _fileFor(String projectId) async {
+  Future<File> _fileFor(String projectId, [String name = _fileName]) async {
     final dir = await _dirFor(projectId);
-    return File('${dir.path}/$_fileName');
+    return File('${dir.path}/$name');
+  }
+
+  /// 只解析路径、不创建目录：读操作不应该留下空工程目录。
+  Future<File> _existingFileFor(String projectId, String name) async {
+    _assertSafeId(projectId);
+    final root = await _libraryRoot();
+    return File('${root.path}/$projectId/$name');
   }
 
   /// 工程 id 会拼进文件路径，必须拒绝任何可能逃逸出工程目录的取值。

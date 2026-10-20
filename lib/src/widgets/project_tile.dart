@@ -1,3 +1,5 @@
+import 'dart:typed_data';
+
 import 'package:flutter/material.dart';
 
 import '../models/project.dart';
@@ -9,13 +11,17 @@ class ProjectTile extends StatelessWidget {
     required this.project,
     required this.onTap,
     this.onLongPress,
+    this.thumbnail,
   });
 
   final DrawingProject project;
   final VoidCallback onTap;
 
-  /// 长按回调：用于弹出工程操作（删除等）。
+  /// 长按回调：用于弹出工程操作（重命名 / 删除）。
   final VoidCallback? onLongPress;
+
+  /// 工程缩略图（PNG 字节）；为空时显示占位图标。
+  final Uint8List? thumbnail;
 
   String get _updatedLabel {
     final now = DateTime.now();
@@ -41,15 +47,23 @@ class ProjectTile extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            // 缩略图占位：后续接入 Rust 后替换为真实笔画预览。
+            // 缩略图：进入画板保存后会生成；未及时生成时回落为占位图标。
             Expanded(
               child: Container(
                 color: theme.colorScheme.surfaceContainerHighest,
-                child: Icon(
-                  Icons.image_outlined,
-                  size: 48,
-                  color: theme.colorScheme.outline,
-                ),
+                child: thumbnail == null
+                    ? Icon(
+                        Icons.image_outlined,
+                        size: 48,
+                        color: theme.colorScheme.outline,
+                      )
+                    : Image.memory(
+                        thumbnail!,
+                        fit: BoxFit.cover,
+                        alignment: Alignment.center,
+                        gaplessPlayback: true,
+                        filterQuality: FilterQuality.medium,
+                      ),
               ),
             ),
             Padding(

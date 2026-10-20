@@ -1,3 +1,6 @@
+import 'dart:async';
+import 'dart:typed_data';
+
 import 'package:flutter/material.dart';
 
 import '../models/project.dart';
@@ -35,6 +38,10 @@ class _HomeScreenState extends State<HomeScreen> {
       GlobalKey<ScaffoldMessengerState>();
 
   List<DrawingProject> _projects = const [];
+
+  /// 各工程的缩略图（PNG 字节）。未生成的工程不在表中，卡片回落为占位图标。
+  final Map<String, Uint8List> _thumbnails = <String, Uint8List>{};
+
   bool _loading = true;
   HomeSection _section = HomeSection.projects;
 
@@ -49,8 +56,26 @@ class _HomeScreenState extends State<HomeScreen> {
     if (!mounted) return;
     setState(() {
       _projects = projects;
+      _thumbnails.clear();
       _loading = false;
     });
+    // 缩略图后置加载：先让列表出来，图片就位后再补一帧。
+    unawaited(_loadThumbnails(projects));
+  }
+
+  Future<void> _loadThumbnails(List<DrawingProject> projects) async {
+    final thumbs = <String, Uint8List>{};
+    await Future.wait(projects.map((project) async {
+      try {
+        final bytes = await _documentStore.readThumbnail(project.id);
+        if (bytes != null) thumbs[project.id] = bytes;
+      } catch (_) {
+        // 单张缩略图损坏不应影响列表展示。
+      }
+    }));
+
+    if (!mounted || thumbs.isEmpty) return;
+    setState(() => _thumbnails.addAll(thumbs));
   }
 
   Future<void> _createProject() async {
@@ -86,6 +111,11 @@ class _HomeScreenState extends State<HomeScreen> {
             mainAxisSize: MainAxisSize.min,
             children: [
               ListTile(
+                leading: const Icon(Icons.drive_file_rename_outline),
+                title: const Text('重命名'),
+                onTap: () => Navigator.of(sheetContext).pop('rename'),
+              ),
+              ListTile(
                 leading: Icon(Icons.delete_outline, color: scheme.error),
                 title: Text('删除', style: TextStyle(color: scheme.error)),
                 onTap: () => Navigator.of(sheetContext).pop('delete'),
@@ -97,8 +127,51 @@ class _HomeScreenState extends State<HomeScreen> {
       },
     );
 
-    if (action != 'delete' || !mounted) return;
-    await _confirmDelete(project);
+    if (!mounted) return;
+    switch (action) {
+      case 'rename':
+        await _promptRename(project);
+      case 'delete':
+        await _confirmDelete(project);
+    }
+  }
+
+  /// 重命名：弹出带当前名称的输入框，空名或未修改时不写盘。
+  Future<void> _promptRename(DrawingProject project) async {
+    final controller = TextEditingController(text: project.name);
+    final input = await showDialog<String>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('重命名工程'),
+        content: TextField(
+          key: const Key('rename-field'),
+          controller: controller,
+          autofocus: true,
+          decoration: const InputDecoration(
+            labelText: '工程名称',
+            border: OutlineInputBorder(),
+          ),
+          onSubmitted: (value) => Navigator.of(dialogContext).pop(value),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            key: const Key('rename-confirm'),
+            onPressed: () => Navigator.of(dialogContext).pop(controller.text),
+            child: const Text('保存'),
+          ),
+        ],
+      ),
+    );
+
+    final name = input?.trim();
+    if (name == null || name.isEmpty || name == project.name) return;
+    await _store.renameProject(project.id, name);
+    if (!mounted) return;
+    await _reload();
   }
 
   /// 删除前的二次确认。删除不可撤销，因此必须显式确认。
@@ -158,12 +231,29 @@ class _HomeScreenState extends State<HomeScreen> {
             children: [
               const _HomeHeader(),
               Expanded(
-                child: Row(
+                child: Stack(
                   children: [
-                    Expanded(child: _buildSection()),
-                    _SideRail(
-                      section: _section,
-                      onSelect: (section) => setState(() => _section = section),
+                    // 内容区右侧留出导航栏的位置，避免卡片被浮层遮住。
+                    Positioned.fill(
+                      child: Padding(
+                        padding: const EdgeInsets.only(
+                          right: _SideRail.gutter,
+                        ),
+                        child: _buildSection(),
+                      ),
+                    ),
+                    // 导航栏是浮层：高度随条目自适应，不占满整列。
+                    Positioned(
+                      right: _SideRail.margin,
+                      top: 0,
+                      bottom: 0,
+                      child: Center(
+                        child: _SideRail(
+                          section: _section,
+                          onSelect: (section) =>
+                              setState(() => _section = section),
+                        ),
+                      ),
                     ),
                   ],
                 ),
@@ -171,6 +261,8 @@ class _HomeScreenState extends State<HomeScreen> {
             ],
           ),
         ),
+        floatingActionButtonLocation:
+            FloatingActionButtonLocation.centerFloat,
         // 只有工程区需要新建入口，其余栏目不显示，避免语义错位。
         floatingActionButton: _section == HomeSection.projects
             ? FloatingActionButton.extended(
@@ -209,6 +301,7 @@ class _HomeScreenState extends State<HomeScreen> {
         final project = _projects[index];
         return ProjectTile(
           project: project,
+          thumbnail: _thumbnails[project.id],
           onTap: () => _openProject(project),
           onLongPress: () => _showProjectActions(project),
         );
@@ -276,7 +369,13 @@ class _SideRail extends StatelessWidget {
     _RailEntry(HomeSection.about, AppIcons.about, '关于'),
   ];
 
-  static const double _width = 76;
+  static const double _width = 64;
+
+  /// 悬浮栏与屏幕右缘的距离。
+  static const double margin = 12;
+
+  /// 内容区需要让出的宽度：栏宽 + 两侧留白。
+  static const double gutter = _width + margin * 2;
 
   /// 条目之间的统一间距，保证图标在竖向上等距排布。
   static const double _itemGap = 8;
@@ -286,17 +385,17 @@ class _SideRail extends StatelessWidget {
     final theme = Theme.of(context);
     return Container(
       width: _width,
+      padding: const EdgeInsets.symmetric(vertical: 8),
       decoration: BoxDecoration(
-        color: theme.colorScheme.surfaceContainerLowest,
-        border: Border(
-          left: BorderSide(
-            color: theme.colorScheme.outlineVariant.withValues(alpha: 0.4),
-          ),
+        color: theme.colorScheme.surfaceContainerLow,
+        borderRadius: BorderRadius.circular(_width / 2),
+        border: Border.all(
+          color: theme.colorScheme.outlineVariant.withValues(alpha: 0.5),
         ),
       ),
       child: Column(
+        mainAxisSize: MainAxisSize.min,
         children: [
-          const SizedBox(height: 12),
           for (var i = 0; i < _entries.length; i++) ...[
             if (i > 0) const SizedBox(height: _itemGap),
             _RailButton(

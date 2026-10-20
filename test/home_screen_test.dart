@@ -121,6 +121,39 @@ void main() {
     expect(find.text('测试工程'), findsOneWidget);
   });
 
+  testWidgets('长按可重命名，保存后列表更新', (tester) async {
+    await pumpHome(tester, const Size(400, 800));
+
+    await tester.longPress(find.text('测试工程'));
+    await tester.pumpAndSettle();
+    expect(find.text('重命名'), findsOneWidget);
+
+    await tester.tap(find.text('重命名'));
+    await tester.pumpAndSettle();
+
+    await tester.enterText(find.byKey(const Key('rename-field')), '速写练习');
+    await tester.tap(find.byKey(const Key('rename-confirm')));
+    await tester.pumpAndSettle();
+
+    expect(find.text('速写练习'), findsOneWidget);
+    expect(find.text('测试工程'), findsNothing);
+  });
+
+  testWidgets('重命名为空时保持原名', (tester) async {
+    await pumpHome(tester, const Size(400, 800));
+
+    await tester.longPress(find.text('测试工程'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('重命名'));
+    await tester.pumpAndSettle();
+
+    await tester.enterText(find.byKey(const Key('rename-field')), '   ');
+    await tester.tap(find.byKey(const Key('rename-confirm')));
+    await tester.pumpAndSettle();
+
+    expect(find.text('测试工程'), findsOneWidget);
+  });
+
   testWidgets('画板自带 messenger，提示不会溢出到主界面', (tester) async {
     final project = DrawingProject.create(
       '画板',

@@ -53,6 +53,18 @@ class ProjectStore {
     await saveProjects(projects);
   }
 
+  /// 重命名工程。
+  Future<void> renameProject(String id, String name) async {
+    final projects = await loadProjects();
+    final index = projects.indexWhere((p) => p.id == id);
+    if (index == -1) return;
+    projects[index] = projects[index].copyWith(
+      name: name,
+      updatedAt: DateTime.now(),
+    );
+    await saveProjects(projects);
+  }
+
   /// 从索引中移除工程。
   ///
   /// 只负责元数据；对应的笔画文件由 `DocumentStore.deleteStrokes` 清理——
