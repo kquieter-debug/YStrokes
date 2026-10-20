@@ -28,6 +28,12 @@ class _HomeScreenState extends State<HomeScreen> {
   final ProjectStore _store = ProjectStore();
   late final DocumentStore _documentStore =
       widget.documentStore ?? DocumentStore();
+
+  /// 主界面私有 messenger：提示只属于当前页面，进入画板后随之销毁。
+  /// 与画板内的做法对称，避免任一方向的提示互相渗透。
+  final GlobalKey<ScaffoldMessengerState> _messengerKey =
+      GlobalKey<ScaffoldMessengerState>();
+
   List<DrawingProject> _projects = const [];
   bool _loading = true;
   HomeSection _section = HomeSection.projects;
@@ -135,41 +141,45 @@ class _HomeScreenState extends State<HomeScreen> {
     if (!mounted) return;
     await _reload();
     if (!mounted) return;
-    ScaffoldMessenger.of(context)
-      ..hideCurrentSnackBar()
+    _messengerKey.currentState
+      ?..hideCurrentSnackBar()
       ..showSnackBar(SnackBar(content: Text('已删除「${project.name}」')));
   }
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      body: SafeArea(
-        bottom: false,
-        child: Column(
-          children: [
-            const _HomeHeader(),
-            Expanded(
-              child: Row(
-                children: [
-                  Expanded(child: _buildSection()),
-                  _SideRail(
-                    section: _section,
-                    onSelect: (section) => setState(() => _section = section),
-                  ),
-                ],
+    // 主界面自带 messenger：删除等提示不会跟随用户进入画板。
+    return ScaffoldMessenger(
+      key: _messengerKey,
+      child: Scaffold(
+        body: SafeArea(
+          bottom: false,
+          child: Column(
+            children: [
+              const _HomeHeader(),
+              Expanded(
+                child: Row(
+                  children: [
+                    Expanded(child: _buildSection()),
+                    _SideRail(
+                      section: _section,
+                      onSelect: (section) => setState(() => _section = section),
+                    ),
+                  ],
+                ),
               ),
-            ),
-          ],
+            ],
+          ),
         ),
+        // 只有工程区需要新建入口，其余栏目不显示，避免语义错位。
+        floatingActionButton: _section == HomeSection.projects
+            ? FloatingActionButton.extended(
+                onPressed: _createProject,
+                icon: const Icon(Icons.add),
+                label: const Text('新建工程'),
+              )
+            : null,
       ),
-      // 只有工程区需要新建入口，其余栏目不显示，避免语义错位。
-      floatingActionButton: _section == HomeSection.projects
-          ? FloatingActionButton.extended(
-              onPressed: _createProject,
-              icon: const Icon(Icons.add),
-              label: const Text('新建工程'),
-            )
-          : null,
     );
   }
 
