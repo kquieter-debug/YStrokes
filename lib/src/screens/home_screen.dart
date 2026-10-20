@@ -5,8 +5,13 @@ import '../services/project_store.dart';
 import '../widgets/app_icon.dart';
 import '../widgets/project_tile.dart';
 import 'canvas_screen.dart';
+import 'sections/about_section.dart';
+import 'sections/settings_section.dart';
 
-/// 主界面：文件管理区，负责工程列表预览与创建新工程。
+/// 主界面栏目。右侧竖排导航与内容区一一对应。
+enum HomeSection { projects, settings, about }
+
+/// 主界面：左侧为当前栏目的内容，右侧为常驻导航栏。
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
 
@@ -18,6 +23,7 @@ class _HomeScreenState extends State<HomeScreen> {
   final ProjectStore _store = ProjectStore();
   List<DrawingProject> _projects = const [];
   bool _loading = true;
+  HomeSection _section = HomeSection.projects;
 
   @override
   void initState() {
@@ -88,19 +94,38 @@ class _HomeScreenState extends State<HomeScreen> {
         child: Column(
           children: [
             const _HomeHeader(),
-            Expanded(child: _buildBody()),
+            Expanded(
+              child: Row(
+                children: [
+                  Expanded(child: _buildSection()),
+                  _SideRail(
+                    section: _section,
+                    onSelect: (section) => setState(() => _section = section),
+                  ),
+                ],
+              ),
+            ),
           ],
         ),
       ),
-      floatingActionButton: FloatingActionButton.extended(
-        onPressed: _createProject,
-        icon: const Icon(Icons.add),
-        label: const Text('新建工程'),
-      ),
+      // 只有工程区需要新建入口，其余栏目不显示，避免语义错位。
+      floatingActionButton: _section == HomeSection.projects
+          ? FloatingActionButton.extended(
+              onPressed: _createProject,
+              icon: const Icon(Icons.add),
+              label: const Text('新建工程'),
+            )
+          : null,
     );
   }
 
-  Widget _buildBody() {
+  Widget _buildSection() => switch (_section) {
+        HomeSection.projects => _buildProjects(),
+        HomeSection.settings => const SettingsSection(),
+        HomeSection.about => const AboutSection(),
+      };
+
+  Widget _buildProjects() {
     if (_loading) {
       return const Center(child: CircularProgressIndicator());
     }
@@ -108,7 +133,7 @@ class _HomeScreenState extends State<HomeScreen> {
       return const _EmptyState();
     }
     return GridView.builder(
-      padding: const EdgeInsets.all(16),
+      padding: const EdgeInsets.fromLTRB(20, 8, 20, 96),
       gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
         maxCrossAxisExtent: 240,
         mainAxisSpacing: 12,
@@ -123,31 +148,6 @@ class _HomeScreenState extends State<HomeScreen> {
           onTap: () => _openProject(project),
         );
       },
-    );
-  }
-}
-
-class _EmptyState extends StatelessWidget {
-  const _EmptyState();
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    return Center(
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Icon(Icons.folder_open, size: 72, color: theme.colorScheme.outline),
-          const SizedBox(height: 16),
-          Text('还没有工程', style: theme.textTheme.titleMedium),
-          const SizedBox(height: 8),
-          Text(
-            '点击右下角「新建工程」开始创作',
-            style: theme.textTheme.bodyMedium
-                ?.copyWith(color: theme.colorScheme.onSurfaceVariant),
-          ),
-        ],
-      ),
     );
   }
 }
@@ -179,6 +179,126 @@ class _HomeHeader extends StatelessWidget {
             size: 24,
             color: theme.colorScheme.primary,
             semanticLabel: '应用图标占位',
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// 右侧竖向导航栏。
+class _SideRail extends StatelessWidget {
+  const _SideRail({required this.section, required this.onSelect});
+
+  final HomeSection section;
+  final ValueChanged<HomeSection> onSelect;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Container(
+      width: 76,
+      decoration: BoxDecoration(
+        color: theme.colorScheme.surfaceContainerLowest,
+        border: Border(
+          left: BorderSide(
+            color: theme.colorScheme.outlineVariant.withValues(alpha: 0.4),
+          ),
+        ),
+      ),
+      child: Column(
+        children: [
+          const SizedBox(height: 8),
+          _RailButton(
+            icon: AppIcons.projects,
+            label: '工程',
+            selected: section == HomeSection.projects,
+            onTap: () => onSelect(HomeSection.projects),
+          ),
+          _RailButton(
+            icon: AppIcons.settings,
+            label: '设置',
+            selected: section == HomeSection.settings,
+            onTap: () => onSelect(HomeSection.settings),
+          ),
+          _RailButton(
+            icon: AppIcons.about,
+            label: '关于',
+            selected: section == HomeSection.about,
+            onTap: () => onSelect(HomeSection.about),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _RailButton extends StatelessWidget {
+  const _RailButton({
+    required this.icon,
+    required this.label,
+    required this.selected,
+    required this.onTap,
+  });
+
+  final String icon;
+  final String label;
+  final bool selected;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final foreground = selected
+        ? theme.colorScheme.primary
+        : theme.colorScheme.onSurfaceVariant;
+
+    return InkWell(
+      onTap: onTap,
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 160),
+        margin: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+        padding: const EdgeInsets.symmetric(vertical: 10),
+        decoration: BoxDecoration(
+          color: selected
+              ? theme.colorScheme.primaryContainer.withValues(alpha: 0.55)
+              : Colors.transparent,
+          borderRadius: BorderRadius.circular(14),
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            AppIcon(icon, size: 22, color: foreground, semanticLabel: label),
+            const SizedBox(height: 4),
+            Text(
+              label,
+              style: theme.textTheme.labelSmall?.copyWith(color: foreground),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _EmptyState extends StatelessWidget {
+  const _EmptyState();
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Center(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(Icons.folder_open, size: 72, color: theme.colorScheme.outline),
+          const SizedBox(height: 16),
+          Text('还没有工程', style: theme.textTheme.titleMedium),
+          const SizedBox(height: 8),
+          Text(
+            '点击右下角「新建工程」开始创作',
+            style: theme.textTheme.bodyMedium
+                ?.copyWith(color: theme.colorScheme.onSurfaceVariant),
           ),
         ],
       ),

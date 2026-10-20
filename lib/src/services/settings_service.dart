@@ -15,4 +15,10 @@ class SettingsService {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setBool(_welcomeSeenKey, true);
   }
+
+  /// 清除「已展示」标记，下次启动重新显示欢迎界面。
+  Future<void> resetWelcome() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove(_welcomeSeenKey);
+  }
 }
