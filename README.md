@@ -17,6 +17,8 @@
 - **可靠落盘**：原子写入（临时文件 + 重命名），进程被系统回收也不会留下半截文档；文档损坏时按「部分恢复」处理。
 - **可撤销**：新增笔画、擦除与清空画布均可撤销。
 - **工具**：画笔与橡皮。橡皮以「擦除笔画」的形式记录，因此撤销天然成立，文档也不必保存位图。
+- **图层**：每层独立不透明度与显隐，笔画写入当前图层；每层单独合成，橡皮只作用于本层。
+- **视口**：双指缩放 / 旋转 / 平移，带「适配画布」复位；落笔坐标经视口反算，缩放后不偏移。
 
 ## 技术栈
 
@@ -35,12 +37,15 @@ ystrokes/
 │  ├─ main.dart              # 入口：初始化 FRB
 │  └─ src/
 │     ├─ app.dart            # 根组件与主题
-│     ├─ models/             # DrawingProject / Stroke / DocumentSpec / CanvasPreset
+│     ├─ models/             # DrawingProject / Stroke / DrawingLayer
+│     │                      # DocumentSpec / CanvasPreset / ToolSettings
 │     ├─ screens/            # welcome / home / canvas / new_document
 │     │                      # sections：工程区 / 设置 / 关于
 │     ├─ services/           # StrokeSmoother / DrawingEngine / canvas_geometry
-│     │                      # DocumentStore / ProjectStore / SettingsService / AppTheme
+│     │                      # canvas_viewport / DocumentStore / ProjectStore
+│     │                      # SettingsService / AppTheme
 │     ├─ widgets/            # ProjectTile / AppIcon / SectionCard
+│     │                      # HsvColorPicker / ToolSettingsSheet / LayersSheet
 │     └─ rust/               # FRB 生成代码（勿手改）
 ├─ rust/                     # Rust 后端
 │  ├─ Cargo.toml
@@ -157,7 +162,7 @@ flutter analyze                              # 静态检查
 
 - 仅面向 Android；`windows/` 工程用于调试渲染，不作为交付目标。
 - 工具面板固定两列、暂不支持折叠；工具目前只有画笔与橡皮，配色与笔宽为固定档位。
-- 尚无缩放/平移、导出与图层面板。
+- 尚无导出与图层混合模式；图层暂只支持不透明度与显隐。
 
 ## 许可证
 
