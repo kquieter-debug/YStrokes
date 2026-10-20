@@ -38,7 +38,7 @@ flutter_rust_bridge::frb_generated_boilerplate!(
     default_rust_auto_opaque = RustAutoOpaqueMoi,
 );
 pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_VERSION: &str = "2.12.0";
-pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = 41748435;
+pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = -708002349;
 
 // Section: executor
 
@@ -46,7 +46,7 @@ flutter_rust_bridge::frb_generated_default_handler!();
 
 // Section: wire_funcs
 
-fn wire__crate__api__decode_document_impl(
+fn wire__crate__api__document__decode_document_impl(
     port_: flutter_rust_bridge::for_generated::MessagePort,
     ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
     rust_vec_len_: i32,
@@ -72,14 +72,15 @@ fn wire__crate__api__decode_document_impl(
             deserializer.end();
             move |context| {
                 transform_result_sse::<_, ()>((move || {
-                    let output_ok = Result::<_, ()>::Ok(crate::api::decode_document(api_bytes))?;
+                    let output_ok =
+                        Result::<_, ()>::Ok(crate::api::document::decode_document(api_bytes))?;
                     Ok(output_ok)
                 })())
             }
         },
     )
 }
-fn wire__crate__api__encode_document_impl(
+fn wire__crate__api__document__encode_document_impl(
     port_: flutter_rust_bridge::for_generated::MessagePort,
     ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
     rust_vec_len_: i32,
@@ -101,11 +102,12 @@ fn wire__crate__api__encode_document_impl(
             };
             let mut deserializer =
                 flutter_rust_bridge::for_generated::SseDeserializer::new(message);
-            let api_strokes = <Vec<crate::api::Stroke>>::sse_decode(&mut deserializer);
+            let api_strokes = <Vec<crate::api::stroke::Stroke>>::sse_decode(&mut deserializer);
             deserializer.end();
             move |context| {
                 transform_result_sse::<_, ()>((move || {
-                    let output_ok = Result::<_, ()>::Ok(crate::api::encode_document(api_strokes))?;
+                    let output_ok =
+                        Result::<_, ()>::Ok(crate::api::document::encode_document(api_strokes))?;
                     Ok(output_ok)
                 })())
             }
@@ -144,6 +146,70 @@ fn wire__crate__api__ping_impl(
         },
     )
 }
+fn wire__crate__api__tools__brush__profile_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_normal::<flutter_rust_bridge::for_generated::SseCodec, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "profile",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            deserializer.end();
+            move |context| {
+                transform_result_sse::<_, ()>((move || {
+                    let output_ok = Result::<_, ()>::Ok(crate::api::tools::brush::profile())?;
+                    Ok(output_ok)
+                })())
+            }
+        },
+    )
+}
+fn wire__crate__api__tools__eraser__profile_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_normal::<flutter_rust_bridge::for_generated::SseCodec, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "profile",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            deserializer.end();
+            move |context| {
+                transform_result_sse::<_, ()>((move || {
+                    let output_ok = Result::<_, ()>::Ok(crate::api::tools::eraser::profile())?;
+                    Ok(output_ok)
+                })())
+            }
+        },
+    )
+}
 fn wire__crate__api__rust_version_impl(
     port_: flutter_rust_bridge::for_generated::MessagePort,
     ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
@@ -176,7 +242,7 @@ fn wire__crate__api__rust_version_impl(
         },
     )
 }
-fn wire__crate__api__simplify_stroke_impl(
+fn wire__crate__api__stroke__simplify_stroke_impl(
     port_: flutter_rust_bridge::for_generated::MessagePort,
     ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
     rust_vec_len_: i32,
@@ -198,12 +264,12 @@ fn wire__crate__api__simplify_stroke_impl(
             };
             let mut deserializer =
                 flutter_rust_bridge::for_generated::SseDeserializer::new(message);
-            let api_points = <Vec<crate::api::StrokePoint>>::sse_decode(&mut deserializer);
+            let api_points = <Vec<crate::api::stroke::StrokePoint>>::sse_decode(&mut deserializer);
             let api_tolerance = <f64>::sse_decode(&mut deserializer);
             deserializer.end();
             move |context| {
                 transform_result_sse::<_, ()>((move || {
-                    let output_ok = Result::<_, ()>::Ok(crate::api::simplify_stroke(
+                    let output_ok = Result::<_, ()>::Ok(crate::api::stroke::simplify_stroke(
                         api_points,
                         api_tolerance,
                     ))?;
@@ -213,7 +279,7 @@ fn wire__crate__api__simplify_stroke_impl(
         },
     )
 }
-fn wire__crate__api__smooth_stroke_impl(
+fn wire__crate__api__stroke__smooth_stroke_impl(
     port_: flutter_rust_bridge::for_generated::MessagePort,
     ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
     rust_vec_len_: i32,
@@ -235,20 +301,21 @@ fn wire__crate__api__smooth_stroke_impl(
             };
             let mut deserializer =
                 flutter_rust_bridge::for_generated::SseDeserializer::new(message);
-            let api_points = <Vec<crate::api::StrokePoint>>::sse_decode(&mut deserializer);
+            let api_points = <Vec<crate::api::stroke::StrokePoint>>::sse_decode(&mut deserializer);
             let api_window = <u32>::sse_decode(&mut deserializer);
             deserializer.end();
             move |context| {
                 transform_result_sse::<_, ()>((move || {
-                    let output_ok =
-                        Result::<_, ()>::Ok(crate::api::smooth_stroke(api_points, api_window))?;
+                    let output_ok = Result::<_, ()>::Ok(crate::api::stroke::smooth_stroke(
+                        api_points, api_window,
+                    ))?;
                     Ok(output_ok)
                 })())
             }
         },
     )
 }
-fn wire__crate__api__stroke_bounds_impl(
+fn wire__crate__api__stroke__stroke_bounds_impl(
     port_: flutter_rust_bridge::for_generated::MessagePort,
     ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
     rust_vec_len_: i32,
@@ -270,18 +337,19 @@ fn wire__crate__api__stroke_bounds_impl(
             };
             let mut deserializer =
                 flutter_rust_bridge::for_generated::SseDeserializer::new(message);
-            let api_points = <Vec<crate::api::StrokePoint>>::sse_decode(&mut deserializer);
+            let api_points = <Vec<crate::api::stroke::StrokePoint>>::sse_decode(&mut deserializer);
             deserializer.end();
             move |context| {
                 transform_result_sse::<_, ()>((move || {
-                    let output_ok = Result::<_, ()>::Ok(crate::api::stroke_bounds(api_points))?;
+                    let output_ok =
+                        Result::<_, ()>::Ok(crate::api::stroke::stroke_bounds(api_points))?;
                     Ok(output_ok)
                 })())
             }
         },
     )
 }
-fn wire__crate__api__stroke_point_new_impl(
+fn wire__crate__api__stroke__stroke_point_new_impl(
     port_: flutter_rust_bridge::for_generated::MessagePort,
     ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
     rust_vec_len_: i32,
@@ -310,12 +378,113 @@ fn wire__crate__api__stroke_point_new_impl(
             deserializer.end();
             move |context| {
                 transform_result_sse::<_, ()>((move || {
-                    let output_ok = Result::<_, ()>::Ok(crate::api::StrokePoint::new(
+                    let output_ok = Result::<_, ()>::Ok(crate::api::stroke::StrokePoint::new(
                         api_x,
                         api_y,
                         api_pressure,
                         api_timestamp_ms,
                     ))?;
+                    Ok(output_ok)
+                })())
+            }
+        },
+    )
+}
+fn wire__crate__api__tools__tool_kind_from_code_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_normal::<flutter_rust_bridge::for_generated::SseCodec, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "tool_kind_from_code",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_code = <u8>::sse_decode(&mut deserializer);
+            deserializer.end();
+            move |context| {
+                transform_result_sse::<_, ()>((move || {
+                    let output_ok =
+                        Result::<_, ()>::Ok(crate::api::tools::ToolKind::from_code(api_code))?;
+                    Ok(output_ok)
+                })())
+            }
+        },
+    )
+}
+fn wire__crate__api__tools__tool_kind_to_code_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_normal::<flutter_rust_bridge::for_generated::SseCodec, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "tool_kind_to_code",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_that = <crate::api::tools::ToolKind>::sse_decode(&mut deserializer);
+            deserializer.end();
+            move |context| {
+                transform_result_sse::<_, ()>((move || {
+                    let output_ok =
+                        Result::<_, ()>::Ok(crate::api::tools::ToolKind::to_code(api_that))?;
+                    Ok(output_ok)
+                })())
+            }
+        },
+    )
+}
+fn wire__crate__api__tools__tool_profile_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_normal::<flutter_rust_bridge::for_generated::SseCodec, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "tool_profile",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_tool = <crate::api::tools::ToolKind>::sse_decode(&mut deserializer);
+            deserializer.end();
+            move |context| {
+                transform_result_sse::<_, ()>((move || {
+                    let output_ok = Result::<_, ()>::Ok(crate::api::tools::tool_profile(api_tool))?;
                     Ok(output_ok)
                 })())
             }
@@ -333,12 +502,19 @@ impl SseDecode for String {
     }
 }
 
-impl SseDecode for crate::api::DecodeOutcome {
+impl SseDecode for bool {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
-        let mut var_strokes = <Vec<crate::api::Stroke>>::sse_decode(deserializer);
+        deserializer.cursor.read_u8().unwrap() != 0
+    }
+}
+
+impl SseDecode for crate::api::document::DecodeOutcome {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_strokes = <Vec<crate::api::stroke::Stroke>>::sse_decode(deserializer);
         let mut var_error = <Option<String>>::sse_decode(deserializer);
-        return crate::api::DecodeOutcome {
+        return crate::api::document::DecodeOutcome {
             strokes: var_strokes,
             error: var_error,
         };
@@ -349,6 +525,13 @@ impl SseDecode for f64 {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
         deserializer.cursor.read_f64::<NativeEndian>().unwrap()
+    }
+}
+
+impl SseDecode for i32 {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        deserializer.cursor.read_i32::<NativeEndian>().unwrap()
     }
 }
 
@@ -364,25 +547,25 @@ impl SseDecode for Vec<u8> {
     }
 }
 
-impl SseDecode for Vec<crate::api::Stroke> {
+impl SseDecode for Vec<crate::api::stroke::Stroke> {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
         let mut len_ = <i32>::sse_decode(deserializer);
         let mut ans_ = Vec::with_capacity(len_ as usize);
         for idx_ in 0..len_ {
-            ans_.push(<crate::api::Stroke>::sse_decode(deserializer));
+            ans_.push(<crate::api::stroke::Stroke>::sse_decode(deserializer));
         }
         return ans_;
     }
 }
 
-impl SseDecode for Vec<crate::api::StrokePoint> {
+impl SseDecode for Vec<crate::api::stroke::StrokePoint> {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
         let mut len_ = <i32>::sse_decode(deserializer);
         let mut ans_ = Vec::with_capacity(len_ as usize);
         for idx_ in 0..len_ {
-            ans_.push(<crate::api::StrokePoint>::sse_decode(deserializer));
+            ans_.push(<crate::api::stroke::StrokePoint>::sse_decode(deserializer));
         }
         return ans_;
     }
@@ -399,15 +582,17 @@ impl SseDecode for Option<String> {
     }
 }
 
-impl SseDecode for crate::api::Stroke {
+impl SseDecode for crate::api::stroke::Stroke {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
         let mut var_id = <u32>::sse_decode(deserializer);
+        let mut var_tool = <crate::api::tools::ToolKind>::sse_decode(deserializer);
         let mut var_color = <u32>::sse_decode(deserializer);
         let mut var_width = <f64>::sse_decode(deserializer);
-        let mut var_points = <Vec<crate::api::StrokePoint>>::sse_decode(deserializer);
-        return crate::api::Stroke {
+        let mut var_points = <Vec<crate::api::stroke::StrokePoint>>::sse_decode(deserializer);
+        return crate::api::stroke::Stroke {
             id: var_id,
+            tool: var_tool,
             color: var_color,
             width: var_width,
             points: var_points,
@@ -415,14 +600,14 @@ impl SseDecode for crate::api::Stroke {
     }
 }
 
-impl SseDecode for crate::api::StrokeBounds {
+impl SseDecode for crate::api::stroke::StrokeBounds {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
         let mut var_minX = <f64>::sse_decode(deserializer);
         let mut var_minY = <f64>::sse_decode(deserializer);
         let mut var_maxX = <f64>::sse_decode(deserializer);
         let mut var_maxY = <f64>::sse_decode(deserializer);
-        return crate::api::StrokeBounds {
+        return crate::api::stroke::StrokeBounds {
             min_x: var_minX,
             min_y: var_minY,
             max_x: var_maxX,
@@ -431,18 +616,44 @@ impl SseDecode for crate::api::StrokeBounds {
     }
 }
 
-impl SseDecode for crate::api::StrokePoint {
+impl SseDecode for crate::api::stroke::StrokePoint {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
         let mut var_x = <f64>::sse_decode(deserializer);
         let mut var_y = <f64>::sse_decode(deserializer);
         let mut var_pressure = <f64>::sse_decode(deserializer);
         let mut var_timestampMs = <u32>::sse_decode(deserializer);
-        return crate::api::StrokePoint {
+        return crate::api::stroke::StrokePoint {
             x: var_x,
             y: var_y,
             pressure: var_pressure,
             timestamp_ms: var_timestampMs,
+        };
+    }
+}
+
+impl SseDecode for crate::api::tools::ToolKind {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut inner = <i32>::sse_decode(deserializer);
+        return match inner {
+            0 => crate::api::tools::ToolKind::Brush,
+            1 => crate::api::tools::ToolKind::Eraser,
+            _ => unreachable!("Invalid variant for ToolKind: {}", inner),
+        };
+    }
+}
+
+impl SseDecode for crate::api::tools::ToolProfile {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_smoothWindow = <u32>::sse_decode(deserializer);
+        let mut var_simplifyTolerance = <f64>::sse_decode(deserializer);
+        let mut var_erases = <bool>::sse_decode(deserializer);
+        return crate::api::tools::ToolProfile {
+            smooth_window: var_smoothWindow,
+            simplify_tolerance: var_simplifyTolerance,
+            erases: var_erases,
         };
     }
 }
@@ -466,20 +677,6 @@ impl SseDecode for () {
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {}
 }
 
-impl SseDecode for i32 {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
-        deserializer.cursor.read_i32::<NativeEndian>().unwrap()
-    }
-}
-
-impl SseDecode for bool {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
-        deserializer.cursor.read_u8().unwrap() != 0
-    }
-}
-
 fn pde_ffi_dispatcher_primary_impl(
     func_id: i32,
     port: flutter_rust_bridge::for_generated::MessagePort,
@@ -489,14 +686,19 @@ fn pde_ffi_dispatcher_primary_impl(
 ) {
     // Codec=Pde (Serialization + dispatch), see doc to use other codecs
     match func_id {
-        1 => wire__crate__api__decode_document_impl(port, ptr, rust_vec_len, data_len),
-        2 => wire__crate__api__encode_document_impl(port, ptr, rust_vec_len, data_len),
+        1 => wire__crate__api__document__decode_document_impl(port, ptr, rust_vec_len, data_len),
+        2 => wire__crate__api__document__encode_document_impl(port, ptr, rust_vec_len, data_len),
         3 => wire__crate__api__ping_impl(port, ptr, rust_vec_len, data_len),
-        4 => wire__crate__api__rust_version_impl(port, ptr, rust_vec_len, data_len),
-        5 => wire__crate__api__simplify_stroke_impl(port, ptr, rust_vec_len, data_len),
-        6 => wire__crate__api__smooth_stroke_impl(port, ptr, rust_vec_len, data_len),
-        7 => wire__crate__api__stroke_bounds_impl(port, ptr, rust_vec_len, data_len),
-        8 => wire__crate__api__stroke_point_new_impl(port, ptr, rust_vec_len, data_len),
+        4 => wire__crate__api__tools__brush__profile_impl(port, ptr, rust_vec_len, data_len),
+        5 => wire__crate__api__tools__eraser__profile_impl(port, ptr, rust_vec_len, data_len),
+        6 => wire__crate__api__rust_version_impl(port, ptr, rust_vec_len, data_len),
+        7 => wire__crate__api__stroke__simplify_stroke_impl(port, ptr, rust_vec_len, data_len),
+        8 => wire__crate__api__stroke__smooth_stroke_impl(port, ptr, rust_vec_len, data_len),
+        9 => wire__crate__api__stroke__stroke_bounds_impl(port, ptr, rust_vec_len, data_len),
+        10 => wire__crate__api__stroke__stroke_point_new_impl(port, ptr, rust_vec_len, data_len),
+        11 => wire__crate__api__tools__tool_kind_from_code_impl(port, ptr, rust_vec_len, data_len),
+        12 => wire__crate__api__tools__tool_kind_to_code_impl(port, ptr, rust_vec_len, data_len),
+        13 => wire__crate__api__tools__tool_profile_impl(port, ptr, rust_vec_len, data_len),
         _ => unreachable!(),
     }
 }
@@ -516,7 +718,7 @@ fn pde_ffi_dispatcher_sync_impl(
 // Section: rust2dart
 
 // Codec=Dco (DartCObject based), see doc to use other codecs
-impl flutter_rust_bridge::IntoDart for crate::api::DecodeOutcome {
+impl flutter_rust_bridge::IntoDart for crate::api::document::DecodeOutcome {
     fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
         [
             self.strokes.into_into_dart().into_dart(),
@@ -525,17 +727,23 @@ impl flutter_rust_bridge::IntoDart for crate::api::DecodeOutcome {
         .into_dart()
     }
 }
-impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive for crate::api::DecodeOutcome {}
-impl flutter_rust_bridge::IntoIntoDart<crate::api::DecodeOutcome> for crate::api::DecodeOutcome {
-    fn into_into_dart(self) -> crate::api::DecodeOutcome {
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::api::document::DecodeOutcome
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::api::document::DecodeOutcome>
+    for crate::api::document::DecodeOutcome
+{
+    fn into_into_dart(self) -> crate::api::document::DecodeOutcome {
         self
     }
 }
 // Codec=Dco (DartCObject based), see doc to use other codecs
-impl flutter_rust_bridge::IntoDart for crate::api::Stroke {
+impl flutter_rust_bridge::IntoDart for crate::api::stroke::Stroke {
     fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
         [
             self.id.into_into_dart().into_dart(),
+            self.tool.into_into_dart().into_dart(),
             self.color.into_into_dart().into_dart(),
             self.width.into_into_dart().into_dart(),
             self.points.into_into_dart().into_dart(),
@@ -543,14 +751,14 @@ impl flutter_rust_bridge::IntoDart for crate::api::Stroke {
         .into_dart()
     }
 }
-impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive for crate::api::Stroke {}
-impl flutter_rust_bridge::IntoIntoDart<crate::api::Stroke> for crate::api::Stroke {
-    fn into_into_dart(self) -> crate::api::Stroke {
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive for crate::api::stroke::Stroke {}
+impl flutter_rust_bridge::IntoIntoDart<crate::api::stroke::Stroke> for crate::api::stroke::Stroke {
+    fn into_into_dart(self) -> crate::api::stroke::Stroke {
         self
     }
 }
 // Codec=Dco (DartCObject based), see doc to use other codecs
-impl flutter_rust_bridge::IntoDart for crate::api::StrokeBounds {
+impl flutter_rust_bridge::IntoDart for crate::api::stroke::StrokeBounds {
     fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
         [
             self.min_x.into_into_dart().into_dart(),
@@ -561,14 +769,19 @@ impl flutter_rust_bridge::IntoDart for crate::api::StrokeBounds {
         .into_dart()
     }
 }
-impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive for crate::api::StrokeBounds {}
-impl flutter_rust_bridge::IntoIntoDart<crate::api::StrokeBounds> for crate::api::StrokeBounds {
-    fn into_into_dart(self) -> crate::api::StrokeBounds {
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::api::stroke::StrokeBounds
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::api::stroke::StrokeBounds>
+    for crate::api::stroke::StrokeBounds
+{
+    fn into_into_dart(self) -> crate::api::stroke::StrokeBounds {
         self
     }
 }
 // Codec=Dco (DartCObject based), see doc to use other codecs
-impl flutter_rust_bridge::IntoDart for crate::api::StrokePoint {
+impl flutter_rust_bridge::IntoDart for crate::api::stroke::StrokePoint {
     fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
         [
             self.x.into_into_dart().into_dart(),
@@ -579,9 +792,54 @@ impl flutter_rust_bridge::IntoDart for crate::api::StrokePoint {
         .into_dart()
     }
 }
-impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive for crate::api::StrokePoint {}
-impl flutter_rust_bridge::IntoIntoDart<crate::api::StrokePoint> for crate::api::StrokePoint {
-    fn into_into_dart(self) -> crate::api::StrokePoint {
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::api::stroke::StrokePoint
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::api::stroke::StrokePoint>
+    for crate::api::stroke::StrokePoint
+{
+    fn into_into_dart(self) -> crate::api::stroke::StrokePoint {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::api::tools::ToolKind {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        match self {
+            Self::Brush => 0.into_dart(),
+            Self::Eraser => 1.into_dart(),
+            _ => unreachable!(),
+        }
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive for crate::api::tools::ToolKind {}
+impl flutter_rust_bridge::IntoIntoDart<crate::api::tools::ToolKind>
+    for crate::api::tools::ToolKind
+{
+    fn into_into_dart(self) -> crate::api::tools::ToolKind {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::api::tools::ToolProfile {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [
+            self.smooth_window.into_into_dart().into_dart(),
+            self.simplify_tolerance.into_into_dart().into_dart(),
+            self.erases.into_into_dart().into_dart(),
+        ]
+        .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::api::tools::ToolProfile
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::api::tools::ToolProfile>
+    for crate::api::tools::ToolProfile
+{
+    fn into_into_dart(self) -> crate::api::tools::ToolProfile {
         self
     }
 }
@@ -593,10 +851,17 @@ impl SseEncode for String {
     }
 }
 
-impl SseEncode for crate::api::DecodeOutcome {
+impl SseEncode for bool {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
-        <Vec<crate::api::Stroke>>::sse_encode(self.strokes, serializer);
+        serializer.cursor.write_u8(self as _).unwrap();
+    }
+}
+
+impl SseEncode for crate::api::document::DecodeOutcome {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <Vec<crate::api::stroke::Stroke>>::sse_encode(self.strokes, serializer);
         <Option<String>>::sse_encode(self.error, serializer);
     }
 }
@@ -605,6 +870,13 @@ impl SseEncode for f64 {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
         serializer.cursor.write_f64::<NativeEndian>(self).unwrap();
+    }
+}
+
+impl SseEncode for i32 {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        serializer.cursor.write_i32::<NativeEndian>(self).unwrap();
     }
 }
 
@@ -618,22 +890,22 @@ impl SseEncode for Vec<u8> {
     }
 }
 
-impl SseEncode for Vec<crate::api::Stroke> {
+impl SseEncode for Vec<crate::api::stroke::Stroke> {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
         <i32>::sse_encode(self.len() as _, serializer);
         for item in self {
-            <crate::api::Stroke>::sse_encode(item, serializer);
+            <crate::api::stroke::Stroke>::sse_encode(item, serializer);
         }
     }
 }
 
-impl SseEncode for Vec<crate::api::StrokePoint> {
+impl SseEncode for Vec<crate::api::stroke::StrokePoint> {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
         <i32>::sse_encode(self.len() as _, serializer);
         for item in self {
-            <crate::api::StrokePoint>::sse_encode(item, serializer);
+            <crate::api::stroke::StrokePoint>::sse_encode(item, serializer);
         }
     }
 }
@@ -648,17 +920,18 @@ impl SseEncode for Option<String> {
     }
 }
 
-impl SseEncode for crate::api::Stroke {
+impl SseEncode for crate::api::stroke::Stroke {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
         <u32>::sse_encode(self.id, serializer);
+        <crate::api::tools::ToolKind>::sse_encode(self.tool, serializer);
         <u32>::sse_encode(self.color, serializer);
         <f64>::sse_encode(self.width, serializer);
-        <Vec<crate::api::StrokePoint>>::sse_encode(self.points, serializer);
+        <Vec<crate::api::stroke::StrokePoint>>::sse_encode(self.points, serializer);
     }
 }
 
-impl SseEncode for crate::api::StrokeBounds {
+impl SseEncode for crate::api::stroke::StrokeBounds {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
         <f64>::sse_encode(self.min_x, serializer);
@@ -668,13 +941,38 @@ impl SseEncode for crate::api::StrokeBounds {
     }
 }
 
-impl SseEncode for crate::api::StrokePoint {
+impl SseEncode for crate::api::stroke::StrokePoint {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
         <f64>::sse_encode(self.x, serializer);
         <f64>::sse_encode(self.y, serializer);
         <f64>::sse_encode(self.pressure, serializer);
         <u32>::sse_encode(self.timestamp_ms, serializer);
+    }
+}
+
+impl SseEncode for crate::api::tools::ToolKind {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <i32>::sse_encode(
+            match self {
+                crate::api::tools::ToolKind::Brush => 0,
+                crate::api::tools::ToolKind::Eraser => 1,
+                _ => {
+                    unimplemented!("");
+                }
+            },
+            serializer,
+        );
+    }
+}
+
+impl SseEncode for crate::api::tools::ToolProfile {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <u32>::sse_encode(self.smooth_window, serializer);
+        <f64>::sse_encode(self.simplify_tolerance, serializer);
+        <bool>::sse_encode(self.erases, serializer);
     }
 }
 
@@ -695,20 +993,6 @@ impl SseEncode for u8 {
 impl SseEncode for () {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {}
-}
-
-impl SseEncode for i32 {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
-        serializer.cursor.write_i32::<NativeEndian>(self).unwrap();
-    }
-}
-
-impl SseEncode for bool {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
-        serializer.cursor.write_u8(self as _).unwrap();
-    }
 }
 
 #[cfg(not(target_family = "wasm"))]

@@ -4,12 +4,14 @@ import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
 
 import '../models/project.dart';
-import '../rust/api.dart' as rust;
+import '../rust/api/stroke.dart' as rust;
+import '../rust/api/tools.dart';
 import '../services/canvas_geometry.dart';
 import '../services/document_store.dart';
 import '../services/drawing_engine.dart';
 import '../services/project_store.dart';
 import '../services/stroke_smoother.dart';
+import '../widgets/app_icon.dart';
 
 /// 工程画板。
 ///
@@ -18,7 +20,7 @@ import '../services/stroke_smoother.dart';
 /// 1. **工作台**（pasteboard）：铺满可用区域的底色，表示「文档之外」。
 /// 2. **文档**（document）：按工程固有比例居中的纸面，笔画只绘制在这里。
 ///    其矩形只由「文档比例」与「可用区域」决定，与工具栏无关。
-/// 3. **工具面板**：悬浮在屏幕右侧的覆盖层，**不参与布局**，因此无论它多宽、
+/// 3. **工具面板**：悬浮在屏幕左侧的覆盖层，**不参与布局**，因此无论它多宽、
 ///    怎样随屏幕自适应，都不会挤压或缩放文档。
 ///
 /// 屏幕尺寸变化（旋转、分屏、折叠）只会改变工作台大小与文档的显示比例，
@@ -47,6 +49,31 @@ class _CanvasScreenState extends State<CanvasScreen>
 
   /// 当前画笔颜色（ARGB）。
   Color _color = const Color(0xFF000000);
+
+  /// 当前工具。
+  ToolKind _tool = ToolKind.brush;
+
+  /// 各工具的行为参数，进入画板时从 Rust 读取一次并缓存。
+  ///
+  /// Rust 是工具参数的单一事实来源；读取失败（例如单元测试环境未初始化 FFI）
+  /// 时回落到 [_fallbackProfiles]，保证画板仍可用。
+  Map<ToolKind, ToolProfile> _profiles = _fallbackProfiles;
+
+  static const Map<ToolKind, ToolProfile> _fallbackProfiles =
+      <ToolKind, ToolProfile>{
+    ToolKind.brush: ToolProfile(
+      smoothWindow: 5,
+      simplifyTolerance: 0.002,
+      erases: false,
+    ),
+    ToolKind.eraser: ToolProfile(
+      smoothWindow: 3,
+      simplifyTolerance: 0.001,
+      erases: true,
+    ),
+  };
+
+  ToolProfile get _profile => _profiles[_tool] ?? _fallbackProfiles[_tool]!;
 
   /// 当前笔宽在 [_widthRatios] 中的下标。
   int _widthIndex = 1;
@@ -113,6 +140,21 @@ class _CanvasScreenState extends State<CanvasScreen>
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _loadDocument();
+    _loadToolProfiles();
+  }
+
+  /// 从 Rust 读取工具参数；失败时保留 [_fallbackProfiles]。
+  Future<void> _loadToolProfiles() async {
+    try {
+      final loaded = <ToolKind, ToolProfile>{};
+      for (final tool in ToolKind.values) {
+        loaded[tool] = await toolProfile(tool: tool);
+      }
+      if (!mounted) return;
+      setState(() => _profiles = loaded);
+    } catch (_) {
+      // Rust 未初始化或调用失败：沿用内置默认值，画板照常可用。
+    }
   }
 
   @override
@@ -203,7 +245,10 @@ class _CanvasScreenState extends State<CanvasScreen>
     _activePointer = e.pointer;
     _strokeStartMs = DateTime.now().millisecondsSinceEpoch;
 
-    final smoother = StrokeSmoother(shortestSide: _documentRect.shortestSide);
+    final smoother = StrokeSmoother(
+      shortestSide: _documentRect.shortestSide,
+      window: _profile.smoothWindow,
+    );
     smoother.add(_toNormalized(e.localPosition, e.pressure));
     setState(() {
       _smoother = smoother;
@@ -245,6 +290,7 @@ class _CanvasScreenState extends State<CanvasScreen>
       _activeRevision++;
       _engine.addStroke(
         points,
+        tool: _tool,
         color: _color.toARGB32(),
         widthRatio: _widthRatio,
       );
@@ -404,7 +450,7 @@ class _CanvasScreenState extends State<CanvasScreen>
     );
   }
 
-  /// 工具面板：贴右缘、竖向排列、默认两列。
+  /// 工具面板：贴左缘、竖向排列、全部区块均为两列。
   ///
   /// 尺寸随屏幕短边自适应（见 [_ToolbarMetrics]），但始终是覆盖层——
   /// 面板变宽或变窄都不会改变下方文档的矩形。
@@ -413,15 +459,17 @@ class _CanvasScreenState extends State<CanvasScreen>
     return Positioned(
       top: 0,
       bottom: 0,
-      right: metrics.margin,
+      left: metrics.margin,
       child: Center(
         child: _BrushPanel(
           metrics: metrics,
           palette: _palette,
           widthRatios: _widthRatios,
           selectedColor: _color,
+          selectedTool: _tool,
           widthIndex: _widthIndex,
           onSelectColor: (color) => setState(() => _color = color),
+          onSelectTool: (tool) => setState(() => _tool = tool),
           onSelectWidth: (index) => setState(() => _widthIndex = index),
         ),
       ),
@@ -436,6 +484,10 @@ class _CanvasScreenState extends State<CanvasScreen>
         final available = Size(constraints.maxWidth, constraints.maxHeight);
         final rect = fitDocumentRect(available, document.aspectRatio);
         _documentRect = rect;
+
+        final picture = _ensurePicture(rect);
+        // 橡皮进行中：已完成的笔画必须并入同一个图层，实时擦除才看得见。
+        final erasing = _tool == ToolKind.eraser && _smoother != null;
 
         return Listener(
           behavior: HitTestBehavior.opaque,
@@ -454,7 +506,9 @@ class _CanvasScreenState extends State<CanvasScreen>
                   rect: rect,
                   child: ColoredBox(color: Color(document.backgroundArgb)),
                 ),
-              CustomPaint(painter: _CommittedPainter(_ensurePicture(rect))),
+              CustomPaint(
+                painter: _CommittedPainter(picture, visible: !erasing),
+              ),
               CustomPaint(
                 painter: _ActiveStrokePainter(
                   points: _activePoints,
@@ -462,6 +516,8 @@ class _CanvasScreenState extends State<CanvasScreen>
                   color: _color.toARGB32(),
                   width: _widthRatio * rect.shortestSide,
                   rect: rect,
+                  erase: erasing,
+                  basePicture: picture,
                 ),
               ),
             ],
@@ -487,15 +543,22 @@ class _CanvasScreenState extends State<CanvasScreen>
     final recorder = ui.PictureRecorder();
     final canvas = Canvas(recorder);
     if (!rect.isEmpty) {
-      for (final stroke in _engine.strokes) {
+      final strokes = _engine.strokes;
+      // 存在擦除笔画时必须成层：clear 混合只能作用于当前图层，
+      // 直接画在画布上会把下方的纸面一起擦穿。
+      final layered = strokes.any((stroke) => stroke.isEraser);
+      if (layered) canvas.saveLayer(rect, Paint());
+      for (final stroke in strokes) {
         _paintStroke(
           canvas,
           rect,
           stroke.points,
           stroke.color,
           stroke.widthInPixels(rect.shortestSide),
+          erase: stroke.isEraser,
         );
       }
+      if (layered) canvas.restore();
     }
     final picture = recorder.endRecording();
     _committedPicture = picture;
@@ -514,13 +577,16 @@ void _paintStroke(
   Rect rect,
   List<rust.StrokePoint> points,
   int color,
-  double width,
-) {
+  double width, {
+  bool erase = false,
+}) {
   if (points.isEmpty || rect.isEmpty) return;
 
   Offset toOffset(rust.StrokePoint p) =>
       Offset(rect.left + p.x * rect.width, rect.top + p.y * rect.height);
 
+  // 橡皮以「清空」方式合成：颜色无关紧要，混合模式才是关键。
+  // 调用方必须先把笔画放进独立图层，否则 clear 会连纸面一起擦掉。
   final strokePaint = Paint()
     ..color = Color(color)
     ..style = PaintingStyle.stroke
@@ -528,16 +594,15 @@ void _paintStroke(
     ..strokeCap = StrokeCap.round
     ..strokeJoin = StrokeJoin.round
     ..isAntiAlias = true;
+  if (erase) strokePaint.blendMode = BlendMode.clear;
 
   if (points.length == 1) {
     // 单点：轻点画布应留下一个圆点，而不是什么都没有。
-    canvas.drawCircle(
-      toOffset(points.first),
-      width / 2,
-      Paint()
-        ..color = Color(color)
-        ..isAntiAlias = true,
-    );
+    final dotPaint = Paint()
+      ..color = Color(color)
+      ..isAntiAlias = true;
+    if (erase) dotPaint.blendMode = BlendMode.clear;
+    canvas.drawCircle(toOffset(points.first), width / 2, dotPaint);
     return;
   }
 
@@ -558,20 +623,31 @@ void _paintStroke(
 }
 
 /// 已完成笔画：直接复用烘焙好的 [ui.Picture]。
+///
+/// 橡皮进行时会被隐藏——此时由活动层把整幅画合并成一层再擦除，
+/// 否则「擦」的效果看不见（详见 [_ActiveStrokePainter]）。
 class _CommittedPainter extends CustomPainter {
-  const _CommittedPainter(this.picture);
+  const _CommittedPainter(this.picture, {required this.visible});
 
   final ui.Picture picture;
+  final bool visible;
 
   @override
-  void paint(Canvas canvas, Size size) => canvas.drawPicture(picture);
+  void paint(Canvas canvas, Size size) {
+    if (!visible) return;
+    canvas.drawPicture(picture);
+  }
 
   @override
   bool shouldRepaint(covariant _CommittedPainter oldDelegate) =>
-      oldDelegate.picture != picture;
+      oldDelegate.picture != picture || oldDelegate.visible != visible;
 }
 
 /// 正在绘制的一笔：每帧只重绘这一条路径。
+///
+/// 橡皮需要特殊处理：`BlendMode.clear` 只能擦掉**同一图层内**的像素。已完成的
+/// 笔画在另一张 picture 里，直接叠加 clear 只会把画布擦穿到背景色。因此擦除时
+/// 把「已完成的画 + 当前擦除路径」放进同一个图层，视觉上才是真的在擦纸上的墨。
 class _ActiveStrokePainter extends CustomPainter {
   const _ActiveStrokePainter({
     required this.points,
@@ -579,6 +655,8 @@ class _ActiveStrokePainter extends CustomPainter {
     required this.color,
     required this.width,
     required this.rect,
+    required this.erase,
+    required this.basePicture,
   });
 
   final List<rust.StrokePoint> points;
@@ -586,10 +664,22 @@ class _ActiveStrokePainter extends CustomPainter {
   final int color;
   final double width;
   final Rect rect;
+  final bool erase;
+  final ui.Picture basePicture;
 
   @override
-  void paint(Canvas canvas, Size size) =>
+  void paint(Canvas canvas, Size size) {
+    if (!erase) {
       _paintStroke(canvas, rect, points, color, width);
+      return;
+    }
+    if (points.isEmpty || rect.isEmpty) return;
+
+    canvas.saveLayer(rect, Paint());
+    canvas.drawPicture(basePicture);
+    _paintStroke(canvas, rect, points, color, width, erase: true);
+    canvas.restore();
+  }
 
   @override
   bool shouldRepaint(covariant _ActiveStrokePainter oldDelegate) =>
@@ -597,6 +687,8 @@ class _ActiveStrokePainter extends CustomPainter {
       oldDelegate.color != color ||
       oldDelegate.width != width ||
       oldDelegate.rect != rect ||
+      oldDelegate.erase != erase ||
+      oldDelegate.basePicture != basePicture ||
       !identical(oldDelegate.points, points);
 }
 
@@ -644,15 +736,20 @@ class _ToolbarMetrics {
   final double radius;
 }
 
-/// 悬浮笔刷面板：右侧竖向停靠，固定两列。
+/// 悬浮工具面板：左侧竖向停靠，所有区块统一两列。
+///
+/// 分区顺序与 Photoshop 一致：工具 → 颜色 → 尺寸。新增工具只需往工具区块的
+/// 列表里加一项，网格会自动排布。
 class _BrushPanel extends StatelessWidget {
   const _BrushPanel({
     required this.metrics,
     required this.palette,
     required this.widthRatios,
     required this.selectedColor,
+    required this.selectedTool,
     required this.widthIndex,
     required this.onSelectColor,
+    required this.onSelectTool,
     required this.onSelectWidth,
   });
 
@@ -660,11 +757,19 @@ class _BrushPanel extends StatelessWidget {
   final List<Color> palette;
   final List<double> widthRatios;
   final Color selectedColor;
+  final ToolKind selectedTool;
   final int widthIndex;
   final ValueChanged<Color> onSelectColor;
+  final ValueChanged<ToolKind> onSelectTool;
   final ValueChanged<int> onSelectWidth;
 
   static const int _columns = 2;
+
+  /// 当前可用的绘画工具。后续扩容直接在这里追加。
+  static const List<({ToolKind kind, String icon, String label})> _tools = [
+    (kind: ToolKind.brush, icon: AppIcons.brush, label: '画笔'),
+    (kind: ToolKind.eraser, icon: AppIcons.eraser, label: '橡皮'),
+  ];
 
   @override
   Widget build(BuildContext context) {
@@ -680,6 +785,17 @@ class _BrushPanel extends StatelessWidget {
           mainAxisSize: MainAxisSize.min,
           children: [
             _buildGrid(<Widget>[
+              for (final tool in _tools)
+                _ToolCell(
+                  icon: tool.icon,
+                  label: tool.label,
+                  selected: tool.kind == selectedTool,
+                  metrics: metrics,
+                  onTap: () => onSelectTool(tool.kind),
+                ),
+            ]),
+            _buildDivider(theme),
+            _buildGrid(<Widget>[
               for (final color in palette)
                 _ColorCell(
                   color: color,
@@ -688,17 +804,7 @@ class _BrushPanel extends StatelessWidget {
                   onTap: () => onSelectColor(color),
                 ),
             ]),
-            Padding(
-              padding: EdgeInsets.symmetric(vertical: metrics.gap),
-              child: SizedBox(
-                width: metrics.cell * _columns + metrics.gap,
-                child: Divider(
-                  height: 1,
-                  thickness: 1,
-                  color: theme.colorScheme.outlineVariant,
-                ),
-              ),
-            ),
+            _buildDivider(theme),
             _buildGrid(<Widget>[
               for (var i = 0; i < widthRatios.length; i++)
                 _WidthCell(
@@ -709,6 +815,20 @@ class _BrushPanel extends StatelessWidget {
                 ),
             ]),
           ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildDivider(ThemeData theme) {
+    return Padding(
+      padding: EdgeInsets.symmetric(vertical: metrics.gap),
+      child: SizedBox(
+        width: metrics.cell * _columns + metrics.gap,
+        child: Divider(
+          height: 1,
+          thickness: 1,
+          color: theme.colorScheme.outlineVariant,
         ),
       ),
     );
@@ -732,6 +852,63 @@ class _BrushPanel extends StatelessWidget {
       rows.add(Row(mainAxisSize: MainAxisSize.min, children: children));
     }
     return Column(mainAxisSize: MainAxisSize.min, children: rows);
+  }
+}
+
+/// 工具格：选中时以主色圆形底色高亮，与导航栏的选中语言保持一致。
+class _ToolCell extends StatelessWidget {
+  const _ToolCell({
+    required this.icon,
+    required this.label,
+    required this.selected,
+    required this.metrics,
+    required this.onTap,
+  });
+
+  final String icon;
+  final String label;
+  final bool selected;
+  final _ToolbarMetrics metrics;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final diameter = metrics.cell * 0.74;
+    final foreground = selected ? scheme.primary : scheme.onSurfaceVariant;
+
+    return Tooltip(
+      message: label,
+      child: InkWell(
+        onTap: onTap,
+        customBorder: const CircleBorder(),
+        child: SizedBox(
+          width: metrics.cell,
+          height: metrics.cell,
+          child: Center(
+            child: AnimatedContainer(
+              duration: const Duration(milliseconds: 140),
+              width: diameter,
+              height: diameter,
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                color: selected
+                    ? scheme.primaryContainer.withValues(alpha: 0.85)
+                    : Colors.transparent,
+              ),
+              child: Center(
+                child: AppIcon(
+                  icon,
+                  size: metrics.cell * 0.48,
+                  color: foreground,
+                  semanticLabel: label,
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
   }
 }
 

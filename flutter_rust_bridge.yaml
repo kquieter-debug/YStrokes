@@ -1,3 +1,4 @@
-rust_input: crate::api
+# FRB 只扫描列出的模块，子模块必须显式列出（不会自动递归）。
+rust_input: crate::api,crate::api::stroke,crate::api::document,crate::api::tools
 rust_root: rust/
 dart_output: lib/src/rust

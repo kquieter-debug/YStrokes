@@ -1,4 +1,5 @@
-import '../rust/api.dart' as rust;
+import '../rust/api/stroke.dart' as rust;
+import '../rust/api/tools.dart';
 
 /// 一条完整笔画：由若干归一化采样点组成。
 ///
@@ -7,6 +8,7 @@ import '../rust/api.dart' as rust;
 class Stroke {
   Stroke({
     required this.id,
+    required this.tool,
     required this.color,
     required this.widthRatio,
     required this.points,
@@ -15,7 +17,13 @@ class Stroke {
   /// 会话内自增 id，用于区分笔画。
   final int id;
 
-  /// ARGB 颜色值（0xAARRGGBB）。
+  /// 产生该笔画的工具。
+  ///
+  /// 橡皮同样是「一笔」，只是合成方式不同（清空而非叠加）。把它建模为笔画而不是
+  /// 直接改写既有笔画，换来的好处是撤销天然成立、文档格式也不需要存位图。
+  final ToolKind tool;
+
+  /// ARGB 颜色值（0xAARRGGBB）；橡皮忽略该值。
   final int color;
 
   /// 笔画粗细，**归一化比例**：相对画布短边的占比（例如 0.01 表示 1%）。
@@ -27,6 +35,9 @@ class Stroke {
   /// 归一化坐标采样点（0.0 ~ 1.0）。
   final List<rust.StrokePoint> points;
 
+  /// 是否为擦除笔画。
+  bool get isEraser => tool == ToolKind.eraser;
+
   /// 换算为当前画布下的像素笔宽，并保证至少 1 像素可见。
   double widthInPixels(double shortestSide) =>
       (widthRatio * shortestSide).clamp(1.0, double.infinity);
@@ -34,6 +45,7 @@ class Stroke {
   /// 转换为 FFI 层结构，供持久化编码使用。
   rust.Stroke toRust() => rust.Stroke(
         id: id,
+        tool: tool,
         color: color,
         width: widthRatio,
         points: points,
@@ -42,6 +54,7 @@ class Stroke {
   /// 从 FFI 层结构还原。
   factory Stroke.fromRust(rust.Stroke source) => Stroke(
         id: source.id,
+        tool: source.tool,
         color: source.color,
         widthRatio: source.width,
         points: source.points,

@@ -1,4 +1,4 @@
-import '../rust/api.dart' as rust;
+import '../rust/api/stroke.dart' as rust;
 
 /// 笔画增量平滑器。
 ///

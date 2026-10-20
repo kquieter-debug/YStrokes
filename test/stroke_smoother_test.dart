@@ -1,5 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:ystrokes/src/rust/api.dart';
+import 'package:ystrokes/src/rust/api/stroke.dart';
 import 'package:ystrokes/src/services/stroke_smoother.dart';
 
 StrokePoint pt(double x, double y, {double pressure = 1.0, int t = 0}) =>

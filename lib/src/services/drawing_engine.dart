@@ -1,7 +1,8 @@
 import 'dart:math' as math;
 
 import '../models/stroke.dart';
-import '../rust/api.dart' as rust;
+import '../rust/api/stroke.dart' as rust;
+import '../rust/api/tools.dart';
 
 /// 画板引擎：管理笔画列表与撤销/重做栈。
 ///
@@ -54,11 +55,13 @@ class DrawingEngine {
   /// [widthRatio] 为归一化笔宽（相对画布短边）。
   Stroke addStroke(
     List<rust.StrokePoint> points, {
+    required ToolKind tool,
     required int color,
     required double widthRatio,
   }) {
     final stroke = Stroke(
       id: _nextId++,
+      tool: tool,
       color: color,
       widthRatio: widthRatio,
       points: points,

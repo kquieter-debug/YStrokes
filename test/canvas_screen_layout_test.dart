@@ -59,7 +59,7 @@ void main() {
     await tester.pump(const Duration(milliseconds: 200));
   }
 
-  /// 面板内的格子（颜色 6 + 笔宽 4 = 10）。
+  /// 面板内的格子（工具 2 + 颜色 6 + 笔宽 4 = 12）。
   ///
   /// AppBar 的图标按钮同样是 InkWell，按纵向位置排除。
   List<InkWell> panelCells(WidgetTester tester) {
@@ -77,16 +77,16 @@ void main() {
   Size cellSize(WidgetTester tester) =>
       tester.getSize(find.byWidget(panelCells(tester).first));
 
-  testWidgets('360×640 手机：不溢出，格子贴右且排成两列', (tester) async {
+  testWidgets('360×640 手机：不溢出，格子贴左且排成两列', (tester) async {
     await pumpCanvas(tester, const Size(360, 640));
 
     expect(tester.takeException(), isNull, reason: '窄屏不应出现 overflow');
 
     final centers = cellCenters(tester);
-    expect(centers, hasLength(10), reason: '6 个颜色 + 4 个笔宽');
+    expect(centers, hasLength(12), reason: '2 个工具 + 6 个颜色 + 4 个笔宽');
 
-    // 贴右：全部落在屏幕右半区。
-    expect(centers.every((c) => c.dx > 180), isTrue);
+    // 贴左：全部落在屏幕左半区。
+    expect(centers.every((c) => c.dx < 180), isTrue);
 
     // 两列：中心 x 只有两个不同取值。
     final columns = centers.map((c) => c.dx).toSet();
@@ -113,12 +113,12 @@ void main() {
 
     final centers = cellCenters(tester);
     expect(centers.map((c) => c.dx).toSet(), hasLength(2));
-    expect(centers.every((c) => c.dx > 400), isTrue);
+    expect(centers.every((c) => c.dx < 400), isTrue);
   });
 
   testWidgets('横屏不再溢出（历史缺陷场景）', (tester) async {
     await pumpCanvas(tester, const Size(640, 360));
     expect(tester.takeException(), isNull);
-    expect(cellCenters(tester), hasLength(10));
+    expect(cellCenters(tester), hasLength(12));
   });
 }

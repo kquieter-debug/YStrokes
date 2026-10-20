@@ -7,6 +7,8 @@ abstract final class AppIcons {
   static const String projects = 'assets/icons/projects.svg';
   static const String settings = 'assets/icons/settings.svg';
   static const String about = 'assets/icons/about.svg';
+  static const String brush = 'assets/icons/brush.svg';
+  static const String eraser = 'assets/icons/eraser.svg';
 }
 
 /// 单色矢量图标。

@@ -25,6 +25,9 @@ class DrawingProject {
   double get aspectRatio => document.aspectRatio;
 
   /// 创建一个新工程；[id] 为空时自动生成。
+  ///
+  /// 自动 id 由「微秒时间戳 + 进程内序号」组成：只用时间戳时，连续创建多个工程
+  /// 有可能落在同一微秒上而得到相同 id，删除其中一个就会连带删掉另一个。
   factory DrawingProject.create(
     String name, {
     String? id,
@@ -32,13 +35,15 @@ class DrawingProject {
   }) {
     final now = DateTime.now();
     return DrawingProject(
-      id: id ?? now.microsecondsSinceEpoch.toString(),
+      id: id ?? '${now.microsecondsSinceEpoch}-${_sequence++}',
       name: name,
       createdAt: now,
       updatedAt: now,
       document: document,
     );
   }
+
+  static int _sequence = 0;
 
   Map<String, dynamic> toJson() => <String, dynamic>{
         'id': id,

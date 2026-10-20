@@ -4,7 +4,7 @@ import 'dart:typed_data';
 import 'package:path_provider/path_provider.dart';
 
 import '../models/stroke.dart';
-import '../rust/api.dart' as rust;
+import '../rust/api/document.dart' as rust;
 
 /// 笔画数据的文件存储。
 ///
