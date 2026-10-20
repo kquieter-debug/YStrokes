@@ -1,0 +1,10 @@
+# 复制为 android/key.properties 后填入自己的签名信息。
+# 该文件与 .jks 均已被 .gitignore 忽略，不要提交到仓库。
+#
+# 生成密钥（示例）：
+#   keytool -genkeypair -v -keystore android/app/ystrokes-release.jks \
+#     -alias ystrokes -keyalg RSA -keysize 2048 -validity 10000
+storePassword=你的密钥库口令
+keyPassword=你的密钥口令
+keyAlias=ystrokes
+storeFile=ystrokes-release.jks
