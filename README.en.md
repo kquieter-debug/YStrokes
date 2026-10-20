@@ -154,8 +154,7 @@ flutter analyze                              # static analysis
 
 - Android only; the `windows/` project exists to debug rendering, not as a delivery target.
 - The tool panel is fixed at two columns with no collapse, and offers no custom colors or widths.
-- No eraser, zoom/pan, export, or layers yet.
-- `applicationId` is still `com.example.ystrokes` and must be changed before release.
+- No zoom/pan, export, or layers yet.
 
 ## License
 

@@ -5,7 +5,7 @@ plugins {
 }
 
 android {
-    namespace = "com.example.ystrokes"
+    namespace = "com.muffins.ystrokes"
     compileSdk = flutter.compileSdkVersion
     ndkVersion = flutter.ndkVersion
 
@@ -15,8 +15,8 @@ android {
     }
 
     defaultConfig {
-        // TODO: Specify your own unique Application ID (https://developer.android.com/studio/build/application-id.html).
-        applicationId = "com.example.ystrokes"
+        // 应用唯一标识：发布后不可更改（更改会被视为另一个应用）。
+        applicationId = "com.muffins.ystrokes"
         // You can update the following values to match your application needs.
         // For more information, see: https://flutter.dev/to/review-gradle-config.
         minSdk = flutter.minSdkVersion

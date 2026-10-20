@@ -12,3 +12,6 @@ GeneratedPluginRegistrant.java
 key.properties
 **/*.keystore
 **/*.jks
+
+# Kotlin 编译守护进程的临时状态（跨会话残留，不应入库）
+.kotlin/
