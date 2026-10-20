@@ -38,7 +38,8 @@ class CanvasScreen extends StatefulWidget {
   State<CanvasScreen> createState() => _CanvasScreenState();
 }
 
-class _CanvasScreenState extends State<CanvasScreen> with WidgetsBindingObserver {
+class _CanvasScreenState extends State<CanvasScreen>
+    with WidgetsBindingObserver {
   final DrawingEngine _engine = DrawingEngine();
   late final DocumentStore _documentStore =
       widget.documentStore ?? DocumentStore();
@@ -73,6 +74,14 @@ class _CanvasScreenState extends State<CanvasScreen> with WidgetsBindingObserver
   ui.Picture? _committedPicture;
   int _pictureRevision = -1;
   Rect _pictureRect = Rect.zero;
+
+  /// 画板私有的 SnackBar 宿主。
+  ///
+  /// 默认的 `ScaffoldMessenger` 挂在 MaterialApp 上，提示会跨路由存活——
+  /// 在画布里弹出的「已清空画布」退回主界面后仍留在底部。这里为画板建一个局部
+  /// messenger，随路由一起销毁，从结构上保证提示不外溢。
+  final GlobalKey<ScaffoldMessengerState> _messengerKey =
+      GlobalKey<ScaffoldMessengerState>();
 
   bool _loading = true;
   String? _loadWarning;
@@ -288,8 +297,9 @@ class _CanvasScreenState extends State<CanvasScreen> with WidgetsBindingObserver
     if (!_engine.clear()) return;
     _onDocumentChanged();
     // 清空可撤销，因此不做二次确认弹窗，只给一次可感知的提示。
-    ScaffoldMessenger.of(context)
-      ..hideCurrentSnackBar()
+    // 提示交给画板私有 messenger，退出画布时随之销毁。
+    _messengerKey.currentState
+      ?..hideCurrentSnackBar()
       ..showSnackBar(
         SnackBar(
           content: const Text('已清空画布'),
@@ -302,56 +312,62 @@ class _CanvasScreenState extends State<CanvasScreen> with WidgetsBindingObserver
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        title: Text(widget.project.name),
-        actions: [
-          IconButton(
-            onPressed: _engine.canUndo ? _undo : null,
-            tooltip: '撤销',
-            icon: const Icon(Icons.undo),
-          ),
-          IconButton(
-            onPressed: _engine.canRedo ? _redo : null,
-            tooltip: '重做',
-            icon: const Icon(Icons.redo),
-          ),
-          IconButton(
-            onPressed: _engine.isEmpty ? null : _clear,
-            tooltip: '清空',
-            icon: const Icon(Icons.delete_outline),
-          ),
-        ],
-      ),
-      body: _loading
-          ? const Center(child: CircularProgressIndicator())
-          : Stack(
-              children: [
-                // 画布层铺满，工具面板浮在上面且不参与布局。
-                Positioned.fill(child: _buildCanvas()),
-                Positioned(
-                  top: 0,
-                  left: 0,
-                  right: 0,
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      if (_loadWarning != null)
-                        _buildNotice(_loadWarning!, isError: false),
-                      if (_saveError != null)
-                        _buildNotice(_saveError!, isError: true),
-                    ],
-                  ),
-                ),
-                _buildBrushPanel(),
-              ],
+    // 画板自带 messenger：其中的提示随路由一起销毁，不会溢出到主界面。
+    return ScaffoldMessenger(
+      key: _messengerKey,
+      child: Scaffold(
+        appBar: AppBar(
+          title: Text(widget.project.name),
+          actions: [
+            IconButton(
+              onPressed: _engine.canUndo ? _undo : null,
+              tooltip: '撤销',
+              icon: const Icon(Icons.undo),
             ),
+            IconButton(
+              onPressed: _engine.canRedo ? _redo : null,
+              tooltip: '重做',
+              icon: const Icon(Icons.redo),
+            ),
+            IconButton(
+              onPressed: _engine.isEmpty ? null : _clear,
+              tooltip: '清空',
+              icon: const Icon(Icons.delete_outline),
+            ),
+          ],
+        ),
+        body: _loading
+            ? const Center(child: CircularProgressIndicator())
+            : Stack(
+                children: [
+                  // 画布层铺满，工具面板浮在上面且不参与布局。
+                  Positioned.fill(child: _buildCanvas()),
+                  Positioned(
+                    top: 0,
+                    left: 0,
+                    right: 0,
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        if (_loadWarning != null)
+                          _buildNotice(_loadWarning!, isError: false),
+                        if (_saveError != null)
+                          _buildNotice(_saveError!, isError: true),
+                      ],
+                    ),
+                  ),
+                  _buildBrushPanel(),
+                ],
+              ),
+      ),
     );
   }
 
   Widget _buildNotice(String message, {required bool isError}) {
     final theme = Theme.of(context);
-    final color = isError ? theme.colorScheme.error : theme.colorScheme.tertiary;
+    final color = isError
+        ? theme.colorScheme.error
+        : theme.colorScheme.tertiary;
     return Material(
       color: color.withValues(alpha: 0.16),
       child: Padding(
@@ -532,10 +548,7 @@ void _paintStroke(
   for (var i = 1; i < points.length - 1; i++) {
     final current = toOffset(points[i]);
     final next = toOffset(points[i + 1]);
-    final mid = Offset(
-      (current.dx + next.dx) / 2,
-      (current.dy + next.dy) / 2,
-    );
+    final mid = Offset((current.dx + next.dx) / 2, (current.dy + next.dy) / 2);
     path.quadraticBezierTo(current.dx, current.dy, mid.dx, mid.dy);
   }
 
