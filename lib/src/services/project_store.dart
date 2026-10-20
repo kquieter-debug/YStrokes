@@ -48,4 +48,18 @@ class ProjectStore {
     projects[index] = projects[index].copyWith(updatedAt: DateTime.now());
     await saveProjects(projects);
   }
+
+  /// 记录工程的文档宽高比。
+  ///
+  /// 历史工程缺少该字段，画板会在首次打开时按当前视口比例补齐并调用本方法，
+  /// 此后即使旋转屏幕或更换设备，文档形状也不再变化。
+  Future<void> updateAspectRatio(String id, double aspectRatio) async {
+    if (!aspectRatio.isFinite || aspectRatio <= 0) return;
+    final projects = await loadProjects();
+    final index = projects.indexWhere((p) => p.id == id);
+    if (index == -1) return;
+    if (projects[index].aspectRatio == aspectRatio) return;
+    projects[index] = projects[index].copyWith(aspectRatio: aspectRatio);
+    await saveProjects(projects);
+  }
 }
