@@ -9,7 +9,6 @@ import '../models/layer.dart';
 import '../models/layer_blend.dart';
 import '../models/project.dart';
 import '../models/stroke.dart';
-import '../models/stroke_render_options.dart';
 import '../models/tool_settings.dart';
 import '../rust/api/stroke.dart' as rust;
 import '../rust/api/tools.dart';
@@ -24,7 +23,7 @@ import '../services/project_store.dart';
 import '../services/stroke_smoother.dart';
 import '../widgets/app_icon.dart';
 import '../widgets/layers_sheet.dart';
-import '../widgets/tool_settings_sheet.dart';
+import '../widgets/tool_settings_bubble.dart';
 import 'export_screen.dart';
 
 /// 工程画板。
@@ -82,15 +81,6 @@ class _CanvasScreenState extends State<CanvasScreen>
 
   ToolSettings get _activeSettings => _settings[_tool]!;
 
-  /// 当前生效的压感开关。
-  ///
-  /// 取**两个工具**的开关而不是当前工具的：画布上同时存在画笔与橡皮笔画，
-  /// 它们必须各按自己的开关渲染，否则切换工具会让已画内容跳变。
-  StrokeRenderOptions get _renderOptions => StrokeRenderOptions(
-        brushPressure: _settings[ToolKind.brush]!.pressureEnabled,
-        eraserPressure: _settings[ToolKind.eraser]!.pressureEnabled,
-      );
-
   /// 各工具的行为参数，进入画板时从 Rust 读取一次并缓存。
   ///
   /// Rust 是工具参数的单一事实来源；读取失败（例如单元测试环境未初始化 FFI）
@@ -144,13 +134,13 @@ class _CanvasScreenState extends State<CanvasScreen>
   /// 工具栏可拖动的范围（已扣除外边距），用于把手指位移换算成归一化增量。
   Size _toolbarDragArea = Size.zero;
 
+  /// 面板本体，用来测量气泡的锚点位置。
+  final GlobalKey _panelKey = GlobalKey();
+
   /// 已完成笔画的渲染缓存。
   ui.Picture? _committedPicture;
   int _pictureRevision = -1;
   Rect _pictureRect = Rect.zero;
-
-  /// 存取（或重建）已完成笔画的渲染缓存的键之一：压感开关。
-  StrokeRenderOptions _pictureRender = StrokeRenderOptions.none;
 
   /// 画板私有的 SnackBar 宿主。
   ///
@@ -327,8 +317,6 @@ class _CanvasScreenState extends State<CanvasScreen>
       rect,
       Color(document.backgroundArgb),
       _engine.layers,
-      // 缩略图是画板的缩小版：压感开关不跟随，列表里的预览就会和画布不符。
-      render: _renderOptions,
     );
 
     final picture = recorder.endRecording();
@@ -468,6 +456,8 @@ class _CanvasScreenState extends State<CanvasScreen>
         tool: _tool,
         color: _activeSettings.color.toARGB32(),
         widthRatio: _activeSettings.widthRatio,
+        // 画下这一刻的开关状态随笔画一起保存，之后改开关不影响它（ADR-019）。
+        usesPressure: _activeSettings.pressureEnabled,
       );
     });
     _scheduleSave();
@@ -634,7 +624,6 @@ class _CanvasScreenState extends State<CanvasScreen>
           project: widget.project,
           layers: _engine.layers,
           activeLayerId: _engine.activeLayerId,
-          strokeRender: _renderOptions,
         ),
       ),
     );
@@ -837,6 +826,7 @@ class _CanvasScreenState extends State<CanvasScreen>
             child: Align(
               alignment: FractionalOffset(_toolbarAnchor.dx, _toolbarAnchor.dy),
               child: _BrushPanel(
+                key: _panelKey,
                 metrics: metrics,
                 selectedTool: _tool,
                 onSelectTool: _selectTool,
@@ -861,25 +851,51 @@ class _CanvasScreenState extends State<CanvasScreen>
     setState(() => _tool = tool);
   }
 
-  /// 长按工具：打开该工具的参数面板（颜色、粗细、压感）。
+  /// 长按工具（或再次点按已选中的工具）：在工具栏旁边弹出设置气泡。
   Future<void> _openToolSettings(ToolKind tool) async {
-    final result = await showModalBottomSheet<ToolSettings>(
+    final anchor = _toolbarGlobalRect();
+    if (anchor == null) return;
+
+    await showGeneralDialog<void>(
       context: context,
-      isScrollControlled: true,
-      showDragHandle: true,
-      builder: (_) => ToolSettingsSheet(
+      // 遮罩由气泡自己画：需要在关闭时同时处理「点外部」和「尝试拖动工具栏」，
+      // 而 barrierDismissible 只会无参 pop，拿不到这些事件。
+      barrierDismissible: false,
+      barrierLabel: '关闭工具设置',
+      barrierColor: Colors.transparent,
+      transitionDuration: const Duration(milliseconds: 120),
+      pageBuilder: (dialogContext, _, _) => ToolSettingsBubble(
         tool: tool,
         initial: _settings[tool]!,
+        anchor: anchor,
+        onChanged: (value) => _applyToolSettings(tool, value),
+        onClose: () => Navigator.of(dialogContext).pop(),
+      ),
+      transitionBuilder: (context, animation, _, child) => FadeTransition(
+        opacity: CurvedAnimation(parent: animation, curve: Curves.easeOut),
+        child: child,
       ),
     );
-    if (result == null || !mounted) return;
+  }
+
+  /// 应用气泡里的改动。
+  ///
+  /// 只更新「当前工具参数」：已画笔画的外观由自身标记决定（ADR-019），
+  /// 因此不需要让渲染缓存失效——这一点与上一轮全局重绘的做法相反。
+  void _applyToolSettings(ToolKind tool, ToolSettings value) {
+    if (!mounted) return;
     setState(() {
-      _settings[tool] = result;
-      // 压感是全局渲染开关：_ensurePicture 的缓存键含 _renderOptions，
-      // 因此下一次构建会自动重烘焙已完成内容，旧笔画随之改变粗细。
-      // 这里只需让界面重建一次；_activeRevision 保证活动笔画也重绘。
+      _settings[tool] = value;
+      // 活动笔画（若恰好存在）按新参数重绘。
       _activeRevision++;
     });
+  }
+
+  /// 工具栏面板当前的全局矩形，用作气泡的锚点。
+  Rect? _toolbarGlobalRect() {
+    final box = _panelKey.currentContext?.findRenderObject();
+    if (box is! RenderBox || !box.hasSize) return null;
+    return box.localToGlobal(Offset.zero) & box.size;
   }
 
   Widget _buildCanvas() {
@@ -926,7 +942,7 @@ class _CanvasScreenState extends State<CanvasScreen>
                   activeRevision: _activeRevision,
                   viewport: _viewport,
                   activeBlend: _engine.activeLayer.blendMode,
-                  render: _renderOptions,
+                  activePressure: _activeSettings.pressureEnabled,
                 ),
               ),
             ],
@@ -938,17 +954,15 @@ class _CanvasScreenState extends State<CanvasScreen>
 
   /// 取（或重建）已完成笔画的渲染缓存。
   ///
-  /// 缓存键为「笔画版本 + 文档矩形 + 压感开关」：
+  /// 缓存键为「笔画版本 + 文档矩形」：
   /// - 旋转或分屏会改变矩形，触发一次重建，之后恢复稳定；
   /// - 绘制过程中矩形不变，不会重复重建；
-  /// - 压感开关是全局渲染参数，含在键里才能做到「一改开关，旧笔画跟着变宽」。
+  /// - 压感开关**不再需要**进键：已提交笔画的外观光看自身标记，改开关不会改变它们。
   ui.Picture _ensurePicture(Rect rect) {
-    final render = _renderOptions;
     final cached = _committedPicture;
     if (cached != null &&
         _pictureRevision == _engine.revision &&
-        _pictureRect == rect &&
-        _pictureRender == render) {
+        _pictureRect == rect) {
       return cached;
     }
     cached?.dispose();
@@ -961,14 +975,12 @@ class _CanvasScreenState extends State<CanvasScreen>
         rect,
         Color(widget.project.document.backgroundArgb),
         _engine.layers,
-        render: render,
       );
     }
     final picture = recorder.endRecording();
     _committedPicture = picture;
     _pictureRevision = _engine.revision;
     _pictureRect = rect;
-    _pictureRender = render;
     return picture;
   }
 }
@@ -995,7 +1007,7 @@ class _CanvasPainter extends CustomPainter {
     required this.activeRevision,
     required this.viewport,
     required this.activeBlend,
-    required this.render,
+    required this.activePressure,
   });
 
   final ui.Picture picture;
@@ -1011,7 +1023,9 @@ class _CanvasPainter extends CustomPainter {
   final int activeRevision;
   final CanvasViewport viewport;
   final LayerBlendMode activeBlend;
-  final StrokeRenderOptions render;
+
+  /// 活动笔画是否按压感绘制（取当前工具的开关）。
+  final bool activePressure;
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -1040,7 +1054,7 @@ class _CanvasPainter extends CustomPainter {
         activeColor: activeColor,
         activeWidth: activeWidth,
         activeErase: true,
-        render: render,
+        activePressure: activePressure,
       );
       return;
     }
@@ -1066,7 +1080,7 @@ class _CanvasPainter extends CustomPainter {
       activePoints,
       activeColor,
       activeWidth,
-      pressure: activeErase ? render.eraserPressure : render.brushPressure,
+      pressure: activePressure,
     );
     if (needsLayer) canvas.restore();
   }
@@ -1084,7 +1098,7 @@ class _CanvasPainter extends CustomPainter {
       oldDelegate.activeRevision != activeRevision ||
       oldDelegate.viewport != viewport ||
       oldDelegate.activeBlend != activeBlend ||
-      oldDelegate.render != render;
+      oldDelegate.activePressure != activePressure;
 }
 
 /// 工具面板的尺寸方案：随屏幕短边自适应。
@@ -1137,6 +1151,7 @@ class _ToolbarMetrics {
 /// 已选中的工具）后在该工具的设置面板里调整。这样工具栏的长度只与工具数量相关。
 class _BrushPanel extends StatelessWidget {
   const _BrushPanel({
+    super.key,
     required this.metrics,
     required this.selectedTool,
     required this.onSelectTool,

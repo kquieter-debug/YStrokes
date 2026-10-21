@@ -49,12 +49,15 @@ Future<StrokeBounds> strokeBounds({required List<StrokePoint> points}) =>
 /// - `color`：ARGB 颜色（0xAARRGGBB）；橡皮忽略该字段。
 /// - `width`：宽度，**归一化比例**（相对画布短边，例如 0.01 表示 1%）。
 /// - `points`：归一化采样点，按绘制顺序排列。
+/// - `uses_pressure`：这一笔是否按压感渲染。**属于笔画自身**，不跟随工具上的开关：
+///   开关只决定「接下来画的笔怎么画」，已经画下的笔保持画下时的样子（ADR-019）。
 class Stroke {
   final int id;
   final ToolKind tool;
   final int color;
   final double width;
   final List<StrokePoint> points;
+  final bool usesPressure;
 
   const Stroke({
     required this.id,
@@ -62,6 +65,7 @@ class Stroke {
     required this.color,
     required this.width,
     required this.points,
+    required this.usesPressure,
   });
 
   @override
@@ -70,7 +74,8 @@ class Stroke {
       tool.hashCode ^
       color.hashCode ^
       width.hashCode ^
-      points.hashCode;
+      points.hashCode ^
+      usesPressure.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -81,7 +86,8 @@ class Stroke {
           tool == other.tool &&
           color == other.color &&
           width == other.width &&
-          points == other.points;
+          points == other.points &&
+          usesPressure == other.usesPressure;
 }
 
 /// 笔画的轴对齐包围盒。

@@ -6,7 +6,6 @@ import 'package:ystrokes/src/models/stroke.dart';
 import 'package:ystrokes/src/rust/api/document.dart' show LayerBlendMode;
 import 'package:ystrokes/src/rust/api/stroke.dart' as rust;
 import 'package:ystrokes/src/rust/api/tools.dart';
-import 'package:ystrokes/src/models/stroke_render_options.dart';
 import 'package:ystrokes/src/services/svg_exporter.dart';
 
 /// SVG 生成：结构、路径、蒙版、图层属性与转义。
@@ -19,12 +18,14 @@ void main() {
     ToolKind tool = ToolKind.brush,
     int color = 0xFFEF4444,
     double pressure = 1,
+    bool usesPressure = false,
   }) =>
       Stroke(
         id: 0,
         tool: tool,
         color: color,
         widthRatio: widthRatio,
+        usesPressure: usesPressure,
         points: <rust.StrokePoint>[
           for (final (x, y) in points)
             rust.StrokePoint(x: x, y: y, pressure: pressure, timestampMs: 0),
@@ -44,7 +45,8 @@ void main() {
         visible: visible,
         opacity: opacity,
         blendMode: blend,
-        strokes: strokes ?? [stroke(points: const [(0.1, 0.1), (0.5, 0.5), (0.9, 0.9)])],
+        strokes: strokes ??
+            [stroke(points: const [(0.1, 0.1), (0.5, 0.5), (0.9, 0.9)])],
       );
 
   test('根元素尺寸来自文档规格', () {
@@ -153,14 +155,20 @@ void main() {
     expect(svg, isNot(contains('<g ')));
   });
 
-  group('压感', () {
-    const pressureOn = StrokeRenderOptions(brushPressure: true);
-
-    test('开启后改为填充轮廓，不再输出 stroke', () {
+  group('压感（标记在笔画上）', () {
+    test('笔画自带压感标记时输出填充轮廓', () {
       final svg = buildDocumentSvg(
         document: document,
-        layers: [layer()],
-        render: pressureOn,
+        layers: [
+          layer(
+            strokes: [
+              stroke(
+                points: const [(0.1, 0.1), (0.5, 0.5), (0.9, 0.9)],
+                usesPressure: true,
+              ),
+            ],
+          ),
+        ],
       );
 
       expect(svg, contains('fill="#EF4444"'));
@@ -170,7 +178,7 @@ void main() {
       expect(RegExp(r'd="M [^"]*Z"').hasMatch(svg), isTrue);
     });
 
-    test('关闭时输出与压感引入前一致（描边路径）', () {
+    test('无标记时输出与压感引入前一致（描边路径）', () {
       final svg = buildDocumentSvg(document: document, layers: [layer()]);
 
       expect(svg, contains('stroke="#EF4444"'));
@@ -181,22 +189,34 @@ void main() {
     test('单点笔画半径随该点压力缩放', () {
       final full = buildDocumentSvg(
         document: document,
-        layers: [layer(strokes: [stroke(points: const [(0.5, 0.5)])])],
-        render: pressureOn,
+        layers: [
+          layer(
+            strokes: [
+              stroke(points: const [(0.5, 0.5)], usesPressure: true),
+            ],
+          ),
+        ],
       );
       final light = buildDocumentSvg(
         document: document,
         layers: [
-          layer(strokes: [stroke(points: const [(0.5, 0.5)], pressure: 0)]),
+          layer(
+            strokes: [
+              stroke(
+                points: const [(0.5, 0.5)],
+                pressure: 0,
+                usesPressure: true,
+              ),
+            ],
+          ),
         ],
-        render: pressureOn,
       );
 
       expect(full, contains('r="5"'));
       expect(light, contains('r="1.25"'));
     });
 
-    test('橡皮压感开启时蒙版内也是填充轮廓', () {
+    test('橡皮带标记时蒙版内也是填充轮廓', () {
       final svg = buildDocumentSvg(
         document: document,
         layers: [
@@ -206,11 +226,11 @@ void main() {
               stroke(
                 points: const [(0.2, 0.2), (0.8, 0.8)],
                 tool: ToolKind.eraser,
+                usesPressure: true,
               ),
             ],
           ),
         ],
-        render: const StrokeRenderOptions(eraserPressure: true),
       );
 
       expect(svg, contains('<mask id="erase-1"'));
@@ -218,13 +238,16 @@ void main() {
       expect(svg, isNot(contains('stroke="#000000"')));
     });
 
-    test('只影响开关对应的工具', () {
+    test('同一图层里带与不带的笔画各按自身标记输出', () {
       final svg = buildDocumentSvg(
         document: document,
         layers: [
           layer(
             strokes: [
-              stroke(points: const [(0.1, 0.1), (0.9, 0.9)]),
+              stroke(
+                points: const [(0.1, 0.1), (0.9, 0.9)],
+                usesPressure: true,
+              ),
               stroke(
                 points: const [(0.2, 0.2), (0.8, 0.8)],
                 tool: ToolKind.eraser,
@@ -232,10 +255,9 @@ void main() {
             ],
           ),
         ],
-        render: pressureOn,
       );
 
-      // 画笔走填充，橡皮仍是描边（其开关未开启）。
+      // 画笔走填充，橡皮仍是描边（它没有压感标记）。
       expect(svg, contains('fill="#EF4444"'));
       expect(svg, contains('stroke="#000000"'));
     });

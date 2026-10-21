@@ -23,6 +23,7 @@ void main() {
       tool: ToolKind.brush,
       color: 0xFF000000,
       widthRatio: 0.01,
+      usesPressure: false,
     );
   }
 
@@ -256,5 +257,28 @@ void main() {
 
     expect(layer.visible, isFalse);
     expect(layer.strokes, hasLength(1));
+  });
+
+  test('笔画记住画下时的压感标记，撤销重做不丢', () {
+    final points = <rust.StrokePoint>[
+      rust.StrokePoint(x: 0.2, y: 0.2, pressure: 1, timestampMs: 0),
+      rust.StrokePoint(x: 0.8, y: 0.8, pressure: 0.4, timestampMs: 16),
+    ];
+    final stroke = engine.addStroke(
+      points,
+      tool: ToolKind.brush,
+      color: 0xFF000000,
+      widthRatio: 0.01,
+      usesPressure: true,
+    );
+
+    expect(stroke.usesPressure, isTrue);
+    expect(engine.activeLayer.strokes.single.usesPressure, isTrue);
+
+    // 撤销/重做走的是同一批对象，标记不应丢失。
+    expect(engine.undo(), isTrue);
+    expect(engine.activeLayer.strokes, isEmpty);
+    expect(engine.redo(), isTrue);
+    expect(engine.activeLayer.strokes.single.usesPressure, isTrue);
   });
 }

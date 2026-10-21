@@ -25,6 +25,7 @@ void main() {
       tool: ToolKind.brush,
       color: 0xFF000000,
       widthRatio: 0.01,
+      usesPressure: false,
     );
   }
 

@@ -2,7 +2,6 @@ import 'package:flutter/material.dart';
 
 import '../models/layer.dart';
 import '../models/layer_blend.dart';
-import '../models/stroke_render_options.dart';
 import '../rust/api/stroke.dart' as rust;
 import 'stroke_outline.dart';
 
@@ -104,8 +103,9 @@ void paintStrokePath(
 /// [activeLayerId] 指定时，会把 [activePoints] 当作该图层末尾的一笔一起绘制，
 /// 这样橡皮的实时预览发生在图层内部，效果与提交后一致。
 ///
-/// [render] 决定压感是否参与宽度计算。它作用于**全部已提交笔画**，而不只是
-/// 正在画的那一笔——否则改一次开关，屏幕上就会同时存在两种粗细规则。
+/// 每条笔画按压感与否**由笔画自己决定**（`Stroke.usesPressure`），不读工具开关：
+/// 开关只影响接下来画的笔。活动笔画还没有 `Stroke` 实体，因此由 [activePressure]
+/// 单独传入——它取的就是当前工具的开关值。
 void paintDocument(
   Canvas canvas,
   Rect rect,
@@ -116,8 +116,8 @@ void paintDocument(
   int activeColor = 0xFF000000,
   double activeWidth = 1,
   bool activeErase = false,
+  bool activePressure = false,
   bool drawPaper = true,
-  StrokeRenderOptions render = StrokeRenderOptions.none,
 }) {
   if (drawPaper) {
     canvas.drawRect(rect, Paint()..color = paperColor);
@@ -153,7 +153,7 @@ void paintDocument(
         stroke.color,
         stroke.widthInPixels(rect.shortestSide),
         erase: stroke.isEraser,
-        pressure: render.pressureFor(stroke.tool),
+        pressure: stroke.usesPressure,
       );
     }
     if (hasActive) {
@@ -164,9 +164,7 @@ void paintDocument(
         activeColor,
         activeWidth,
         erase: activeErase,
-        // 活动笔画没有 Stroke 实体，按「它是不是橡皮」选开关，语义与提交后一致。
-        pressure:
-            activeErase ? render.eraserPressure : render.brushPressure,
+        pressure: activePressure,
       );
     }
 

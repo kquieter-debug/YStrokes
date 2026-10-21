@@ -166,4 +166,22 @@ void main() {
     expect(AppSettings.toolbarAnchor.value!.dx, lessThanOrEqualTo(1.0));
     expect(AppSettings.toolbarAnchor.value!.dy, lessThanOrEqualTo(1.0));
   });
+
+  testWidgets('长按工具在面板旁弹出设置气泡，点外部关闭', (tester) async {
+    await pumpCanvas(tester, const Size(400, 800));
+
+    await tester.longPress(find.byTooltip('画笔'));
+    await tester.pumpAndSettle();
+
+    // 气泡内容就位，且不再是底部弹窗（没有全屏遮罩下的「完成」按钮）。
+    expect(find.byKey(const Key('tool-pressure-switch')), findsOneWidget);
+    expect(find.text('画笔'), findsWidgets);
+    expect(find.text('完成'), findsNothing);
+
+    // 左上角远离面板与气泡（气泡贴在面板右侧且较高），命中遮罩。
+    await tester.tapAt(const Offset(20, 60));
+    await tester.pumpAndSettle();
+
+    expect(find.byKey(const Key('tool-pressure-switch')), findsNothing);
+  });
 }

@@ -746,12 +746,14 @@ impl SseDecode for crate::api::stroke::Stroke {
         let mut var_color = <u32>::sse_decode(deserializer);
         let mut var_width = <f64>::sse_decode(deserializer);
         let mut var_points = <Vec<crate::api::stroke::StrokePoint>>::sse_decode(deserializer);
+        let mut var_usesPressure = <bool>::sse_decode(deserializer);
         return crate::api::stroke::Stroke {
             id: var_id,
             tool: var_tool,
             color: var_color,
             width: var_width,
             points: var_points,
+            uses_pressure: var_usesPressure,
         };
     }
 }
@@ -966,6 +968,7 @@ impl flutter_rust_bridge::IntoDart for crate::api::stroke::Stroke {
             self.color.into_into_dart().into_dart(),
             self.width.into_into_dart().into_dart(),
             self.points.into_into_dart().into_dart(),
+            self.uses_pressure.into_into_dart().into_dart(),
         ]
         .into_dart()
     }
@@ -1193,6 +1196,7 @@ impl SseEncode for crate::api::stroke::Stroke {
         <u32>::sse_encode(self.color, serializer);
         <f64>::sse_encode(self.width, serializer);
         <Vec<crate::api::stroke::StrokePoint>>::sse_encode(self.points, serializer);
+        <bool>::sse_encode(self.uses_pressure, serializer);
     }
 }
 

@@ -8,7 +8,6 @@ import 'package:ystrokes/src/models/document_spec.dart';
 import 'package:ystrokes/src/models/export_destination.dart';
 import 'package:ystrokes/src/models/layer.dart';
 import 'package:ystrokes/src/models/stroke.dart';
-import 'package:ystrokes/src/models/stroke_render_options.dart';
 import 'package:ystrokes/src/rust/api/stroke.dart' as rust;
 import 'package:ystrokes/src/rust/api/tools.dart';
 import 'package:ystrokes/src/services/export_bridge.dart';
@@ -66,7 +65,12 @@ class _StubBridge implements ExportBridge {
 void main() {
   const document = DocumentSpec(widthPx: 100, heightPx: 200, dpi: 72);
 
-  DrawingLayer layer(String id, {bool visible = true, int strokes = 1}) =>
+  DrawingLayer layer(
+    String id, {
+    bool visible = true,
+    int strokes = 1,
+    bool usesPressure = false,
+  }) =>
       DrawingLayer(
         id: id,
         name: id,
@@ -78,6 +82,7 @@ void main() {
               tool: ToolKind.brush,
               color: 0xFF000000,
               widthRatio: 0.01,
+              usesPressure: usesPressure,
               points: <rust.StrokePoint>[
                 rust.StrokePoint(x: 0.1, y: 0.1, pressure: 1, timestampMs: 0),
                 rust.StrokePoint(x: 0.9, y: 0.9, pressure: 1, timestampMs: 10),
@@ -108,14 +113,13 @@ void main() {
         height: 200,
       ).copyWith(scope: scope);
 
-  test('压感开关透传到 SVG 产物', () async {
+  test('笔画的压感标记透传到 SVG 产物', () async {
     final result = await exporter.export(
       projectName: '压感',
       document: document,
-      layers: [layer('a')],
+      layers: [layer('a', usesPressure: true)],
       activeLayerId: 'a',
       options: svgOptions(),
-      render: const StrokeRenderOptions(brushPressure: true),
     );
 
     final content = utf8.decode(await result.file!.readAsBytes());

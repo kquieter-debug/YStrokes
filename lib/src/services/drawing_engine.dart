@@ -98,6 +98,7 @@ class DrawingEngine {
     required ToolKind tool,
     required int color,
     required double widthRatio,
+    required bool usesPressure,
   }) {
     final stroke = Stroke(
       id: _nextStrokeId++,
@@ -105,6 +106,7 @@ class DrawingEngine {
       color: color,
       widthRatio: widthRatio,
       points: points,
+      usesPressure: usesPressure,
     );
     final layer = activeLayer;
     layer.strokes.add(stroke);

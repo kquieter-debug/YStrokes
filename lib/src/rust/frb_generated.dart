@@ -724,14 +724,15 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   Stroke dco_decode_stroke(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 5)
-      throw Exception('unexpected arr length: expect 5 but see ${arr.length}');
+    if (arr.length != 6)
+      throw Exception('unexpected arr length: expect 6 but see ${arr.length}');
     return Stroke(
       id: dco_decode_u_32(arr[0]),
       tool: dco_decode_tool_kind(arr[1]),
       color: dco_decode_u_32(arr[2]),
       width: dco_decode_f_64(arr[3]),
       points: dco_decode_list_stroke_point(arr[4]),
+      usesPressure: dco_decode_bool(arr[5]),
     );
   }
 
@@ -925,12 +926,14 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_color = sse_decode_u_32(deserializer);
     var var_width = sse_decode_f_64(deserializer);
     var var_points = sse_decode_list_stroke_point(deserializer);
+    var var_usesPressure = sse_decode_bool(deserializer);
     return Stroke(
       id: var_id,
       tool: var_tool,
       color: var_color,
       width: var_width,
       points: var_points,
+      usesPressure: var_usesPressure,
     );
   }
 
@@ -1116,6 +1119,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_u_32(self.color, serializer);
     sse_encode_f_64(self.width, serializer);
     sse_encode_list_stroke_point(self.points, serializer);
+    sse_encode_bool(self.usesPressure, serializer);
   }
 
   @protected

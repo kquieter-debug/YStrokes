@@ -5,13 +5,15 @@
 //! ```text
 //! header : magic "YSTK"(4) | version u16 | layer_count u32
 //! layer  : name_len u16 | name utf8 | opacity f32 | visible u8 | blend u8 | stroke_count u32
-//! stroke : id u32 | color u32 | width f32 | point_count u32 | tool u8
+//! stroke : id u32 | color u32 | width f32 | point_count u32 | tool u8 | uses_pressure u8
 //! point  : x f32 | y f32 | pressure f32 | timestamp_ms u32
 //! ```
 //!
-//! 当前版本 v4（图层 + 混合模式）。解码只接受 v4：项目尚未发布，旧格式不做兼容，
-//! 与其把旧结构折算成新结构、留下含糊的中间状态，不如在解码处直接拒绝。
-//! `version` 字段保留，用于后续格式演进时精确识别。
+//! 当前版本 v5：在笔画头末尾追加 `uses_pressure`（该笔是否按压感渲染）。
+//!
+//! **v4 仍可解码**（与 ADR-007 的「只接受当前版本」不同，见 ADR-019）：作者设备上已有
+//! 真实作品，直接拒绝等于让它们打不开。迁移规则是「v4 的画笔笔画视为开启压感」，
+//! 与 R1 落地后的默认值一致，从而保持打开时的外观不变。编码永远写 v5。
 //!
 //! 坐标用 f32 而非 f64：归一化值域固定在 0~1，绝对精度约 6e-8，
 //! 远小于简化容差（1e-3 量级），体积却减半。
@@ -23,13 +25,30 @@ use super::tools::ToolKind;
 const DOC_MAGIC: [u8; 4] = *b"YSTK";
 
 /// 当前写入的文档版本。
-pub const DOC_VERSION: u16 = 4;
+pub const DOC_VERSION: u16 = 5;
+
+/// 可解码的最低版本。
+///
+/// 只保留一个历史版本：迁移分支越少越不容易腐坏，而 v4 是唯一存在于用户设备上的旧版本。
+const MIN_READABLE_VERSION: u16 = 4;
 
 /// 头部长度：magic(4) + version(2) + layer_count(4)。
 const DOC_HEADER_LEN: usize = 10;
 
-/// 单条笔画头部：id + color + width + point_count + tool。
-const STROKE_HEADER: usize = 17;
+/// v4 的单条笔画头部：id + color + width + point_count + tool。
+const STROKE_HEADER_V4: usize = 17;
+
+/// v5 的单条笔画头部：v4 + uses_pressure。
+const STROKE_HEADER_V5: usize = 18;
+
+/// 指定版本的笔画头长度。
+fn stroke_header_len(version: u16) -> usize {
+    if version >= 5 {
+        STROKE_HEADER_V5
+    } else {
+        STROKE_HEADER_V4
+    }
+}
 
 /// 图层头部中与名称无关的固定部分：
 /// name_len(2) + opacity(4) + visible(1) + blend(1) + stroke_count(4)。
@@ -146,7 +165,7 @@ pub fn encode_document(layers: Vec<Layer>) -> Vec<u8> {
                 + layer
                     .strokes
                     .iter()
-                    .map(|s| STROKE_HEADER + s.points.len() * POINT_LEN)
+                    .map(|s| STROKE_HEADER_V5 + s.points.len() * POINT_LEN)
                     .sum::<usize>()
         })
         .sum();
@@ -167,13 +186,15 @@ pub fn encode_document(layers: Vec<Layer>) -> Vec<u8> {
         out.extend_from_slice(&(layer.strokes.len() as u32).to_le_bytes());
 
         for stroke in &layer.strokes {
-            // 笔画头顺序固定为 id | color | width | point_count | tool，
+            // 笔画头顺序固定为 id | color | width | point_count | tool | uses_pressure，
             // 与图层外壳解耦，便于后续只演进图层结构而不动笔画。
+            // 新增字段只能追加在末尾（见 ADR-008、ADR-019）。
             out.extend_from_slice(&stroke.id.to_le_bytes());
             out.extend_from_slice(&stroke.color.to_le_bytes());
             out.extend_from_slice(&(stroke.width as f32).to_le_bytes());
             out.extend_from_slice(&(stroke.points.len() as u32).to_le_bytes());
             out.push(stroke.tool.to_code());
+            out.push(if stroke.uses_pressure { 1 } else { 0 });
             for p in &stroke.points {
                 out.extend_from_slice(&(p.x as f32).to_le_bytes());
                 out.extend_from_slice(&(p.y as f32).to_le_bytes());
@@ -206,19 +227,19 @@ pub fn decode_document(bytes: Vec<u8>) -> DecodeOutcome {
     }
 
     let version = read_u16(data, 4);
-    if version != DOC_VERSION {
+    if version < MIN_READABLE_VERSION || version > DOC_VERSION {
         return DecodeOutcome {
             layers: Vec::new(),
             error: Some(format!(
-                "不支持的文档版本 {version}（当前版本 {DOC_VERSION}）"
+                "不支持的文档版本 {version}（可读版本 {MIN_READABLE_VERSION}~{DOC_VERSION}）"
             )),
         };
     }
-    decode_layers(data, read_u32(data, 6) as usize)
+    decode_layers(data, read_u32(data, 6) as usize, version)
 }
 
-/// 解析 v3：图层树。
-fn decode_layers(data: &[u8], layer_count: usize) -> DecodeOutcome {
+/// 解析图层树。[version] 决定笔画头是否含 `uses_pressure`。
+fn decode_layers(data: &[u8], layer_count: usize, version: u16) -> DecodeOutcome {
     let mut cursor = DOC_HEADER_LEN;
     let mut layers = Vec::new();
     let mut error = None;
@@ -258,7 +279,7 @@ fn decode_layers(data: &[u8], layer_count: usize) -> DecodeOutcome {
         let mut layer_error = None;
 
         for index in 0..stroke_count {
-            match read_stroke(data, cursor) {
+            match read_stroke(data, cursor, version) {
                 Ok((stroke, next)) => {
                     layer.strokes.push(stroke);
                     cursor = next;
@@ -289,8 +310,9 @@ fn decode_layers(data: &[u8], layer_count: usize) -> DecodeOutcome {
 }
 
 /// 解析一条笔画，返回（笔画, 下一个游标）。
-fn read_stroke(data: &[u8], start: usize) -> Result<(Stroke, usize), String> {
-    if data.len() < start + STROKE_HEADER {
+fn read_stroke(data: &[u8], start: usize, version: u16) -> Result<(Stroke, usize), String> {
+    let header = stroke_header_len(version);
+    if data.len() < start + header {
         return Err("数据截断".to_string());
     }
     let id = read_u32(data, start);
@@ -298,8 +320,14 @@ fn read_stroke(data: &[u8], start: usize) -> Result<(Stroke, usize), String> {
     let width = read_f32(data, start + 8) as f64;
     let point_count = read_u32(data, start + 12) as usize;
     let tool = ToolKind::from_code(data[start + 16]);
+    // v4 没有这个字段：当时的画笔默认按压感渲染（R1 之后），按此推断以保持外观不变。
+    let uses_pressure = if version >= 5 {
+        data[start + 17] != 0
+    } else {
+        tool == ToolKind::Brush
+    };
 
-    let mut cursor = start + STROKE_HEADER;
+    let mut cursor = start + header;
     if point_count > data.len().saturating_sub(cursor) / POINT_LEN {
         return Err(format!("点数声明为 {point_count}，超出文件剩余长度"));
     }
@@ -325,6 +353,7 @@ fn read_stroke(data: &[u8], start: usize) -> Result<(Stroke, usize), String> {
             color,
             width,
             points,
+            uses_pressure,
         },
         cursor,
     ))
@@ -357,6 +386,7 @@ mod tests {
                 StrokePoint::new(0.5, 0.75, 0.5, 16),
                 StrokePoint::new(0.75, 0.125, 0.25, 32),
             ],
+            uses_pressure: tool == ToolKind::Brush,
         }
     }
 
@@ -504,5 +534,67 @@ mod tests {
         layers[0].opacity = 5.0;
         let outcome = decode_document(encode_document(layers));
         assert!((outcome.layers[0].opacity - 1.0).abs() < 1e-6);
+    }
+
+    /// 手工拼一份 v4 文档：笔画头没有 uses_pressure 字节。
+    fn v4_document(tool_code: u8) -> Vec<u8> {
+        let mut out = Vec::new();
+        out.extend_from_slice(b"YSTK");
+        out.extend_from_slice(&4u16.to_le_bytes());
+        out.extend_from_slice(&1u32.to_le_bytes());
+
+        let name = "L".as_bytes();
+        out.extend_from_slice(&(name.len() as u16).to_le_bytes());
+        out.extend_from_slice(name);
+        out.extend_from_slice(&1.0f32.to_le_bytes());
+        out.push(1);
+        out.push(0);
+        out.extend_from_slice(&1u32.to_le_bytes());
+
+        out.extend_from_slice(&0u32.to_le_bytes());
+        out.extend_from_slice(&0xFF00_0000u32.to_le_bytes());
+        out.extend_from_slice(&0.01f32.to_le_bytes());
+        out.extend_from_slice(&1u32.to_le_bytes());
+        out.push(tool_code);
+
+        out.extend_from_slice(&0.5f32.to_le_bytes());
+        out.extend_from_slice(&0.5f32.to_le_bytes());
+        out.extend_from_slice(&1.0f32.to_le_bytes());
+        out.extend_from_slice(&0u32.to_le_bytes());
+        out
+    }
+
+    #[test]
+    fn reads_v4_and_infers_pressure_flag() {
+        // 画笔：迁移为「按压感渲染」，与 R1 之后的默认一致，打开时外观不变。
+        let brush = decode_document(v4_document(ToolKind::Brush.to_code()));
+        assert!(brush.error.is_none(), "{:?}", brush.error);
+        assert_eq!(brush.layers.len(), 1);
+        assert_eq!(brush.layers[0].strokes[0].tool, ToolKind::Brush);
+        assert!(brush.layers[0].strokes[0].uses_pressure);
+
+        // 橡皮：当时默认关闭压感，迁移后仍为关闭。
+        let eraser = decode_document(v4_document(ToolKind::Eraser.to_code()));
+        assert_eq!(eraser.layers[0].strokes[0].tool, ToolKind::Eraser);
+        assert!(!eraser.layers[0].strokes[0].uses_pressure);
+    }
+
+    #[test]
+    fn round_trip_preserves_pressure_flag() {
+        let mut layers = sample_layers();
+        layers[0].strokes[0].uses_pressure = false;
+        layers[1].strokes[0].uses_pressure = true;
+
+        let outcome = decode_document(encode_document(layers));
+        assert!(outcome.error.is_none());
+        assert!(!outcome.layers[0].strokes[0].uses_pressure);
+        assert!(outcome.layers[1].strokes[0].uses_pressure);
+    }
+
+    #[test]
+    fn writes_current_version() {
+        let bytes = encode_document(sample_layers());
+        assert_eq!(read_u16(&bytes, 4), DOC_VERSION);
+        assert_eq!(DOC_VERSION, 5);
     }
 }

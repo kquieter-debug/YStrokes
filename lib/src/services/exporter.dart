@@ -10,7 +10,6 @@ import 'package:path_provider/path_provider.dart';
 import '../models/document_spec.dart';
 import '../models/export_destination.dart';
 import '../models/layer.dart';
-import '../models/stroke_render_options.dart';
 import 'document_painter.dart';
 import 'export_bridge.dart';
 import 'svg_exporter.dart';
@@ -144,9 +143,6 @@ class DocumentExporter {
 
   /// 导出当前文档（或指定图层）。
   ///
-  /// [render] 必须与画板当前的压感开关一致：导出若忽略它，用户会得到
-  /// 「屏幕上变宽、导出的却是固定宽度」的结果。
-  ///
   /// [destination] 决定写到哪里；默认走平台默认位置（Android 上即公共下载目录）。
   Future<ExportResult> export({
     required String projectName,
@@ -154,7 +150,6 @@ class DocumentExporter {
     required List<DrawingLayer> layers,
     required String activeLayerId,
     required ExportOptions options,
-    StrokeRenderOptions render = StrokeRenderOptions.none,
     ExportDestination destination = ExportDestination.platformDefault,
   }) async {
     final selected = _selectLayers(layers, options.scope, activeLayerId);
@@ -174,17 +169,12 @@ class DocumentExporter {
     final Uint8List bytes = switch (options.format) {
       ExportFormat.svg => Uint8List.fromList(
           utf8.encode(
-            buildDocumentSvg(
-              document: document,
-              layers: selected,
-              render: render,
-            ),
+            buildDocumentSvg(document: document, layers: selected),
           ),
         ),
-      ExportFormat.png => await _rasterize(document, selected, options,
-          render: render),
-      ExportFormat.jpg => await _rasterize(document, selected, options,
-          jpeg: true, render: render),
+      ExportFormat.png => await _rasterize(document, selected, options),
+      ExportFormat.jpg =>
+        await _rasterize(document, selected, options, jpeg: true),
     };
 
     return _persist(projectName, options, bytes, destination);
@@ -293,7 +283,6 @@ class DocumentExporter {
     List<DrawingLayer> layers,
     ExportOptions options, {
     bool jpeg = false,
-    StrokeRenderOptions render = StrokeRenderOptions.none,
   }) async {
     final width = options.width;
     final height = options.height;
@@ -310,7 +299,6 @@ class DocumentExporter {
       Color(document.backgroundArgb),
       layers,
       drawPaper: !transparent,
-      render: render,
     );
 
     final picture = recorder.endRecording();

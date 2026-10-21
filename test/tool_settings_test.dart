@@ -4,9 +4,15 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:ystrokes/src/models/tool_settings.dart';
 import 'package:ystrokes/src/rust/api/tools.dart';
 import 'package:ystrokes/src/widgets/hsv_color_picker.dart';
-import 'package:ystrokes/src/widgets/tool_settings_sheet.dart';
+import 'package:ystrokes/src/widgets/tool_settings_bubble.dart';
 
-/// 工具设置面板与取色器。
+/// 一次气泡实例的观测结果。
+class _Harness {
+  final List<ToolSettings> changes = <ToolSettings>[];
+  int closes = 0;
+}
+
+/// 工具设置气泡与取色器。
 void main() {
   group('HsvColorPicker', () {
     Future<Color?> tapAt(
@@ -60,164 +66,111 @@ void main() {
     });
   });
 
-  group('ToolSettingsSheet', () {
-    Future<ToolSettings?> open(
+  group('ToolSettingsBubble', () {
+    Future<_Harness> pumpBubble(
       WidgetTester tester,
-      ToolKind tool,
-    ) async {
-      ToolSettings? result;
+      ToolKind tool, {
+      bool pressureEnabled = false,
+    }) async {
+      final harness = _Harness();
+      tester.view.devicePixelRatio = 1.0;
+      tester.view.physicalSize = const Size(800, 900);
+      addTearDown(tester.view.reset);
+
       await tester.pumpWidget(
         MaterialApp(
           home: Scaffold(
-            body: Builder(
-              builder: (context) => Center(
-                child: ElevatedButton(
-                  onPressed: () async {
-                    result = await showModalBottomSheet<ToolSettings>(
-                      context: context,
-                      builder: (_) => ToolSettingsSheet(
-                        tool: tool,
-                        initial: const ToolSettings(
-                          color: Color(0xFF000000),
-                          widthRatio: 0.01,
-                        ),
-                      ),
-                    );
-                  },
-                  child: const Text('打开'),
-                ),
+            body: ToolSettingsBubble(
+              tool: tool,
+              initial: ToolSettings(
+                color: const Color(0xFF000000),
+                widthRatio: 0.01,
+                pressureEnabled: pressureEnabled,
               ),
+              // 气泡贴在工具栏右侧：左 20、宽 110。
+              anchor: const Rect.fromLTWH(20, 200, 110, 120),
+              onChanged: harness.changes.add,
+              onClose: () => harness.closes++,
             ),
           ),
         ),
       );
-      await tester.tap(find.text('打开'));
       await tester.pumpAndSettle();
-      return result;
+      return harness;
     }
 
-    testWidgets('画笔设置含取色器与粗细滑杆', (tester) async {
-      await open(tester, ToolKind.brush);
+    testWidgets('画笔气泡含取色器、粗细与压感，且没有确认按钮', (tester) async {
+      await pumpBubble(tester, ToolKind.brush);
 
-      expect(find.text('画笔设置'), findsOneWidget);
+      expect(find.text('画笔'), findsOneWidget);
       expect(find.byType(HsvColorPicker), findsOneWidget);
       expect(find.text('粗细'), findsOneWidget);
       expect(find.byKey(const Key('tool-width-slider')), findsOneWidget);
+      expect(find.byKey(const Key('tool-pressure-switch')), findsOneWidget);
+      // 改动即时生效，因此不该再出现「完成 / 确定」这类提交按钮。
+      expect(find.text('完成'), findsNothing);
+      expect(find.text('确定'), findsNothing);
     });
 
-    testWidgets('橡皮设置只有粗细，不显示取色器', (tester) async {
-      await open(tester, ToolKind.eraser);
+    testWidgets('橡皮气泡不含取色器', (tester) async {
+      await pumpBubble(tester, ToolKind.eraser);
 
-      expect(find.text('橡皮设置'), findsOneWidget);
+      expect(find.text('橡皮'), findsOneWidget);
       expect(find.byType(HsvColorPicker), findsNothing);
       expect(find.byKey(const Key('tool-width-slider')), findsOneWidget);
+      expect(find.byKey(const Key('tool-pressure-switch')), findsOneWidget);
     });
 
-    testWidgets('拖动滑杆后完成，回传新的笔宽', (tester) async {
-      // 面板较高，给足竖向空间，避免滑杆落在视口之外。
-      tester.view.devicePixelRatio = 1.0;
-      tester.view.physicalSize = const Size(800, 1200);
-      addTearDown(tester.view.reset);
+    testWidgets('拖动粗细滑杆会即时上报新宽度', (tester) async {
+      final harness = await pumpBubble(tester, ToolKind.brush);
 
-      ToolSettings? result;
-      await tester.pumpWidget(
-        MaterialApp(
-          home: Scaffold(
-            body: Builder(
-              builder: (context) => Center(
-                child: ElevatedButton(
-                  onPressed: () async {
-                    result = await showModalBottomSheet<ToolSettings>(
-                      context: context,
-                      builder: (_) => const ToolSettingsSheet(
-                        tool: ToolKind.brush,
-                        initial: ToolSettings(
-                          color: Color(0xFF000000),
-                          widthRatio: 0.01,
-                        ),
-                      ),
-                    );
-                  },
-                  child: const Text('打开'),
-                ),
-              ),
-            ),
-          ),
-        ),
-      );
-      await tester.tap(find.text('打开'));
-      await tester.pumpAndSettle();
-
-      // 拖到滑杆右侧，笔宽应显著增大。
       await tester.drag(
         find.byKey(const Key('tool-width-slider')),
-        const Offset(120, 0),
+        const Offset(80, 0),
       );
       await tester.pumpAndSettle();
 
-      await tester.tap(find.text('完成'));
-      await tester.pumpAndSettle();
-
-      expect(result, isNotNull);
-      expect(result!.widthRatio, greaterThan(0.01));
+      expect(harness.changes, isNotEmpty);
+      expect(harness.changes.last.widthRatio, greaterThan(0.01));
     });
 
-    testWidgets('压感开关默认随初始设置，切换后可回传', (tester) async {
-      tester.view.devicePixelRatio = 1.0;
-      tester.view.physicalSize = const Size(800, 1400);
-      addTearDown(tester.view.reset);
+    testWidgets('切换压感会即时上报', (tester) async {
+      final harness = await pumpBubble(tester, ToolKind.brush);
 
-      ToolSettings? result;
-      await tester.pumpWidget(
-        MaterialApp(
-          home: Scaffold(
-            body: Builder(
-              builder: (context) => Center(
-                child: ElevatedButton(
-                  onPressed: () async {
-                    result = await showModalBottomSheet<ToolSettings>(
-                      context: context,
-                      builder: (_) => const ToolSettingsSheet(
-                        tool: ToolKind.brush,
-                        initial: ToolSettings(
-                          color: Color(0xFF000000),
-                          widthRatio: 0.01,
-                        ),
-                      ),
-                    );
-                  },
-                  child: const Text('打开'),
-                ),
-              ),
-            ),
-          ),
-        ),
-      );
-      await tester.tap(find.text('打开'));
+      await tester.tap(find.byKey(const Key('tool-pressure-switch')));
       await tester.pumpAndSettle();
 
-      final toggle = find.byKey(const Key('tool-pressure-switch'));
-      expect(toggle, findsOneWidget);
-      expect(
-        tester.widget<SwitchListTile>(toggle).value,
-        isFalse,
-        reason: 'ToolSettings 的压感默认关闭，画笔的默认开启由画板指定',
-      );
-
-      await tester.tap(toggle);
-      await tester.pumpAndSettle();
-      expect(tester.widget<SwitchListTile>(toggle).value, isTrue);
-
-      await tester.tap(find.text('完成'));
-      await tester.pumpAndSettle();
-
-      expect(result, isNotNull);
-      expect(result!.pressureEnabled, isTrue);
+      expect(harness.changes.last.pressureEnabled, isTrue);
     });
 
-    testWidgets('橡皮设置同样提供压感开关', (tester) async {
-      await open(tester, ToolKind.eraser);
-      expect(find.byKey(const Key('tool-pressure-switch')), findsOneWidget);
+    testWidgets('点击气泡外的画面会关闭', (tester) async {
+      final harness = await pumpBubble(tester, ToolKind.brush);
+
+      expect(harness.closes, 0);
+      // 气泡在锚点右侧（约 142~442），右下角远离它。
+      await tester.tapAt(const Offset(700, 800));
+      await tester.pumpAndSettle();
+
+      expect(harness.closes, 1);
+    });
+
+    testWidgets('在气泡外拖动（尝试移动工具栏）也会关闭', (tester) async {
+      final harness = await pumpBubble(tester, ToolKind.brush);
+
+      // 拖动会命中遮罩的 onPanStart：先关气泡，再拖一次才移动工具栏。
+      await tester.dragFrom(const Offset(700, 400), const Offset(-120, 0));
+      await tester.pumpAndSettle();
+
+      expect(harness.closes, 1);
+    });
+
+    testWidgets('点击气泡内部不会关闭', (tester) async {
+      final harness = await pumpBubble(tester, ToolKind.brush);
+
+      await tester.tap(find.text('粗细'));
+      await tester.pumpAndSettle();
+
+      expect(harness.closes, 0);
     });
   });
 }

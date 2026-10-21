@@ -21,6 +21,7 @@ class Stroke {
     required this.color,
     required this.widthRatio,
     required this.points,
+    this.usesPressure = false,
   });
 
   /// 会话内自增 id，用于区分笔画。
@@ -44,6 +45,13 @@ class Stroke {
   /// 归一化坐标采样点（0.0 ~ 1.0）。
   final List<rust.StrokePoint> points;
 
+  /// 这一笔是否按压感渲染。
+  ///
+  /// **属于笔画自身，不跟随工具开关**：开关只决定「接下来画的笔怎么画」，
+  /// 已经画下的笔保持画下时的样子（见 ADR-019）。因此该值会写进文档，
+  /// 重新打开工程后外观不随当前开关变化。
+  final bool usesPressure;
+
   /// 是否为擦除笔画。
   bool get isEraser => tool == ToolKind.eraser;
 
@@ -58,6 +66,7 @@ class Stroke {
         color: color,
         width: widthRatio,
         points: points,
+        usesPressure: usesPressure,
       );
 
   /// 从 FFI 层结构还原。
@@ -67,5 +76,6 @@ class Stroke {
         color: source.color,
         widthRatio: source.width,
         points: source.points,
+        usesPressure: source.usesPressure,
       );
 }

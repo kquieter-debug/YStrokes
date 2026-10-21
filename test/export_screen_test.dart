@@ -10,7 +10,6 @@ import 'package:ystrokes/src/models/export_destination.dart';
 import 'package:ystrokes/src/models/layer.dart';
 import 'package:ystrokes/src/models/project.dart';
 import 'package:ystrokes/src/models/stroke.dart';
-import 'package:ystrokes/src/models/stroke_render_options.dart';
 import 'package:ystrokes/src/rust/api/document.dart' show LayerBlendMode;
 import 'package:ystrokes/src/rust/api/stroke.dart' as rust;
 import 'package:ystrokes/src/rust/api/tools.dart';
@@ -60,7 +59,6 @@ class _FakeBridge implements ExportBridge {
 /// 「参数是否按选项传递、分享是否被调用」，落盘与编码由 `exporter_test` 覆盖。
 class _RecordingExporter extends DocumentExporter {
   ExportOptions? lastOptions;
-  StrokeRenderOptions? lastRender;
   ExportDestination? lastDestination;
   int calls = 0;
 
@@ -71,12 +69,10 @@ class _RecordingExporter extends DocumentExporter {
     required List<DrawingLayer> layers,
     required String activeLayerId,
     required ExportOptions options,
-    StrokeRenderOptions render = StrokeRenderOptions.none,
     ExportDestination destination = ExportDestination.platformDefault,
   }) async {
     calls++;
     lastOptions = options;
-    lastRender = render;
     lastDestination = destination;
     return ExportResult(
       file: File('${Directory.systemTemp.path}/fake.${options.extension}'),

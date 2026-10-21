@@ -45,6 +45,8 @@ pub struct StrokeBounds {
 /// - `color`：ARGB 颜色（0xAARRGGBB）；橡皮忽略该字段。
 /// - `width`：宽度，**归一化比例**（相对画布短边，例如 0.01 表示 1%）。
 /// - `points`：归一化采样点，按绘制顺序排列。
+/// - `uses_pressure`：这一笔是否按压感渲染。**属于笔画自身**，不跟随工具上的开关：
+///   开关只决定「接下来画的笔怎么画」，已经画下的笔保持画下时的样子（ADR-019）。
 #[derive(Debug, Clone, PartialEq)]
 pub struct Stroke {
     pub id: u32,
@@ -52,6 +54,7 @@ pub struct Stroke {
     pub color: u32,
     pub width: f64,
     pub points: Vec<StrokePoint>,
+    pub uses_pressure: bool,
 }
 
 /// Douglas-Peucker 简化：在保留笔画整体形状的前提下减少采样点数量。

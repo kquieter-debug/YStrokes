@@ -4,7 +4,6 @@ import '../models/document_spec.dart';
 import '../models/layer.dart';
 import '../models/layer_blend.dart';
 import '../models/stroke.dart';
-import '../models/stroke_render_options.dart';
 import '../rust/api/stroke.dart' as rust;
 import 'stroke_outline.dart';
 
@@ -26,7 +25,6 @@ import 'stroke_outline.dart';
 String buildDocumentSvg({
   required DocumentSpec document,
   required List<DrawingLayer> layers,
-  StrokeRenderOptions render = StrokeRenderOptions.none,
 }) {
   final width = document.widthPx.toDouble();
   final height = document.heightPx.toDouble();
@@ -81,7 +79,7 @@ String buildDocumentSvg({
       for (final stroke in erasers) {
         if (stroke.points.isEmpty) continue;
         buffer.writeln(
-          '      ${_pathElement(stroke, width, height, shortestSide, forceBlack: true, pressure: render.eraserPressure)}',
+          '      ${_pathElement(stroke, width, height, shortestSide, forceBlack: true)}',
         );
       }
       buffer.writeln('    </mask>');
@@ -90,7 +88,7 @@ String buildDocumentSvg({
     for (final stroke in brushes) {
       if (stroke.points.isEmpty) continue;
       buffer.writeln(
-        '    ${_pathElement(stroke, width, height, shortestSide, pressure: render.brushPressure)}',
+        '    ${_pathElement(stroke, width, height, shortestSide)}',
       );
     }
 
@@ -111,9 +109,10 @@ String _pathElement(
   double height,
   double shortestSide, {
   bool forceBlack = false,
-  bool pressure = false,
 }) {
   final points = stroke.points;
+  // 压感与否记在笔画上，导出因此与画布完全一致，不需要外部再传开关。
+  final pressure = stroke.usesPressure;
   final baseWidth = strokeWidthPx(stroke.widthRatio, shortestSide);
   final color = forceBlack
       ? '#000000'

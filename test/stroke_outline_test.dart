@@ -3,9 +3,7 @@ import 'dart:ui';
 
 import 'package:flutter_test/flutter_test.dart';
 
-import 'package:ystrokes/src/models/stroke_render_options.dart';
 import 'package:ystrokes/src/rust/api/stroke.dart' as rust;
-import 'package:ystrokes/src/rust/api/tools.dart';
 import 'package:ystrokes/src/services/stroke_outline.dart';
 
 /// 压感驱动笔宽：映射曲线、轮廓几何与「换空间不换形状」不变量。
@@ -256,24 +254,4 @@ void main() {
     });
   });
 
-  group('StrokeRenderOptions', () {
-    test('按工具取开关', () {
-      const options = StrokeRenderOptions(brushPressure: true);
-      expect(options.pressureFor(ToolKind.brush), isTrue);
-      expect(options.pressureFor(ToolKind.eraser), isFalse);
-      expect(options.anyPressure, isTrue);
-      expect(StrokeRenderOptions.none.anyPressure, isFalse);
-    });
-
-    test('相等性参与渲染缓存键', () {
-      expect(
-        const StrokeRenderOptions(brushPressure: true),
-        const StrokeRenderOptions(brushPressure: true),
-      );
-      expect(
-        const StrokeRenderOptions(brushPressure: true),
-        isNot(const StrokeRenderOptions(brushPressure: true, eraserPressure: true)),
-      );
-    });
-  });
 }
