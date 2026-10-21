@@ -44,6 +44,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   Layer dco_decode_layer(dynamic raw);
 
   @protected
+  LayerBlendMode dco_decode_layer_blend_mode(dynamic raw);
+
+  @protected
   List<Layer> dco_decode_list_layer(dynamic raw);
 
   @protected
@@ -104,6 +107,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   Layer sse_decode_layer(SseDeserializer deserializer);
 
   @protected
+  LayerBlendMode sse_decode_layer_blend_mode(SseDeserializer deserializer);
+
+  @protected
   List<Layer> sse_decode_list_layer(SseDeserializer deserializer);
 
   @protected
@@ -162,6 +168,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void sse_encode_layer(Layer self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_layer_blend_mode(
+    LayerBlendMode self,
+    SseSerializer serializer,
+  );
 
   @protected
   void sse_encode_list_layer(List<Layer> self, SseSerializer serializer);

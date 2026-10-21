@@ -1,6 +1,7 @@
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:ystrokes/src/models/layer.dart';
+import 'package:ystrokes/src/rust/api/document.dart' show LayerBlendMode;
 import 'package:ystrokes/src/rust/api/stroke.dart' as rust;
 import 'package:ystrokes/src/rust/api/tools.dart';
 import 'package:ystrokes/src/services/drawing_engine.dart';
@@ -150,6 +151,102 @@ void main() {
 
     engine.setLayerVisible(layer.id, false);
     expect(layer.visible, isFalse);
+  });
+
+  test('混合模式可设置并递增版本号', () {
+    final layer = engine.activeLayer;
+    final before = engine.revision;
+
+    engine.setLayerBlendMode(layer.id, LayerBlendMode.multiply);
+    expect(layer.blendMode, LayerBlendMode.multiply);
+    expect(engine.revision, greaterThan(before));
+  });
+
+  test('重命名图层可撤销', () {
+    final layer = engine.activeLayer;
+    expect(engine.renameLayer(layer.id, '  线稿  '), isTrue);
+    expect(layer.name, '线稿', reason: '首尾空白应被裁剪');
+
+    expect(engine.undo(), isTrue);
+    expect(layer.name, '图层 1');
+  });
+
+  test('空名或同名不写盘也不产生撤销记录', () {
+    final layer = engine.activeLayer;
+    final before = engine.revision;
+
+    expect(engine.renameLayer(layer.id, '   '), isFalse);
+    expect(engine.renameLayer(layer.id, layer.name), isFalse);
+    expect(engine.revision, before, reason: '无效修改不应触发重绘');
+    expect(engine.canUndo, isFalse);
+  });
+
+  test('移动图层改变顺序且可撤销', () {
+    final bottom = engine.activeLayer;
+    final top = engine.addLayer();
+
+    expect(engine.layers.first.id, bottom.id);
+    expect(engine.moveLayer(1, 0), isTrue);
+    expect(engine.layers.first.id, top.id);
+    expect(engine.layers.last.id, bottom.id);
+
+    expect(engine.undo(), isTrue);
+    expect(engine.layers.first.id, bottom.id);
+  });
+
+  test('越界的移动被拒绝', () {
+    engine.addLayer();
+    expect(engine.moveLayer(0, 5), isFalse);
+    expect(engine.moveLayer(-1, 0), isFalse);
+    expect(engine.moveLayer(1, 1), isFalse);
+  });
+
+  test('向下合并把上方笔画并入下方，并沿用下方参数', () {
+    final bottom = engine.activeLayer;
+    engine.setLayerOpacity(bottom.id, 0.8);
+    addLine();
+
+    final top = engine.addLayer(name: '上层');
+    engine.setLayerOpacity(top.id, 0.3);
+    engine.setLayerBlendMode(top.id, LayerBlendMode.screen);
+    addLine();
+    addLine();
+
+    final merged = engine.mergeDown(top.id);
+
+    expect(merged, isNotNull);
+    expect(engine.layers, hasLength(1));
+    expect(merged!.id, bottom.id, reason: '结果保留下方图层');
+    expect(merged.strokes, hasLength(3));
+    expect(merged.opacity, closeTo(0.8, 1e-9), reason: '沿用下方不透明度');
+    expect(merged.blendMode, LayerBlendMode.normal);
+    expect(engine.activeLayerId, bottom.id);
+  });
+
+  test('向下合并可撤销并恢复两侧内容', () {
+    final bottom = engine.activeLayer;
+    addLine();
+    final top = engine.addLayer(name: '上层');
+    addLine();
+    addLine();
+
+    engine.mergeDown(top.id);
+    expect(engine.layers, hasLength(1));
+
+    expect(engine.undo(), isTrue);
+    expect(engine.layers, hasLength(2));
+    expect(engine.layers.first.strokes, hasLength(1));
+    expect(engine.layers.last.strokes, hasLength(2));
+    expect(engine.layers.last.name, '上层');
+    expect(engine.layers.last.id, top.id);
+    expect(bottom.strokes, hasLength(1));
+  });
+
+  test('最底层无法向下合并', () {
+    final bottom = engine.activeLayer;
+    engine.addLayer();
+    expect(engine.mergeDown(bottom.id), isNull);
+    expect(engine.layers, hasLength(2));
   });
 
   test('不可见图层的内容仍会写入，只是不参与合成', () {

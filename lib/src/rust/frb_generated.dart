@@ -69,7 +69,7 @@ class RustLib extends BaseEntrypoint<RustLibApi, RustLibApiImpl, RustLibWire> {
   String get codegenVersion => '2.12.0';
 
   @override
-  int get rustContentHash => 370635972;
+  int get rustContentHash => -1579926693;
 
   static const kDefaultExternalLibraryLoaderConfig =
       ExternalLibraryLoaderConfig(
@@ -87,6 +87,14 @@ abstract class RustLibApi extends BaseApi {
 
   Future<Uint8List> crateApiDocumentEncodeDocument({
     required List<Layer> layers,
+  });
+
+  Future<LayerBlendMode> crateApiDocumentLayerBlendModeFromCode({
+    required int code,
+  });
+
+  Future<int> crateApiDocumentLayerBlendModeToCode({
+    required LayerBlendMode that,
   });
 
   Future<Layer> crateApiDocumentLayerNew({required String name});
@@ -196,6 +204,72 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       const TaskConstMeta(debugName: "encode_document", argNames: ["layers"]);
 
   @override
+  Future<LayerBlendMode> crateApiDocumentLayerBlendModeFromCode({
+    required int code,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_u_8(code, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 3,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_layer_blend_mode,
+          decodeErrorData: null,
+        ),
+        constMeta: kCrateApiDocumentLayerBlendModeFromCodeConstMeta,
+        argValues: [code],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiDocumentLayerBlendModeFromCodeConstMeta =>
+      const TaskConstMeta(
+        debugName: "layer_blend_mode_from_code",
+        argNames: ["code"],
+      );
+
+  @override
+  Future<int> crateApiDocumentLayerBlendModeToCode({
+    required LayerBlendMode that,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_layer_blend_mode(that, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 4,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_u_8,
+          decodeErrorData: null,
+        ),
+        constMeta: kCrateApiDocumentLayerBlendModeToCodeConstMeta,
+        argValues: [that],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiDocumentLayerBlendModeToCodeConstMeta =>
+      const TaskConstMeta(
+        debugName: "layer_blend_mode_to_code",
+        argNames: ["that"],
+      );
+
+  @override
   Future<Layer> crateApiDocumentLayerNew({required String name}) {
     return handler.executeNormal(
       NormalTask(
@@ -205,7 +279,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 3,
+            funcId: 5,
             port: port_,
           );
         },
@@ -232,7 +306,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 4,
+            funcId: 6,
             port: port_,
           );
         },
@@ -259,7 +333,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 5,
+            funcId: 7,
             port: port_,
           );
         },
@@ -286,7 +360,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 6,
+            funcId: 8,
             port: port_,
           );
         },
@@ -313,7 +387,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 7,
+            funcId: 9,
             port: port_,
           );
         },
@@ -345,7 +419,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 8,
+            funcId: 10,
             port: port_,
           );
         },
@@ -380,7 +454,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 9,
+            funcId: 11,
             port: port_,
           );
         },
@@ -412,7 +486,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 10,
+            funcId: 12,
             port: port_,
           );
         },
@@ -448,7 +522,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 11,
+            funcId: 13,
             port: port_,
           );
         },
@@ -479,7 +553,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 12,
+            funcId: 14,
             port: port_,
           );
         },
@@ -507,7 +581,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 13,
+            funcId: 15,
             port: port_,
           );
         },
@@ -535,7 +609,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 14,
+            funcId: 16,
             port: port_,
           );
         },
@@ -593,14 +667,21 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   Layer dco_decode_layer(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 4)
-      throw Exception('unexpected arr length: expect 4 but see ${arr.length}');
+    if (arr.length != 5)
+      throw Exception('unexpected arr length: expect 5 but see ${arr.length}');
     return Layer(
       name: dco_decode_String(arr[0]),
       opacity: dco_decode_f_64(arr[1]),
       visible: dco_decode_bool(arr[2]),
-      strokes: dco_decode_list_stroke(arr[3]),
+      blendMode: dco_decode_layer_blend_mode(arr[3]),
+      strokes: dco_decode_list_stroke(arr[4]),
     );
+  }
+
+  @protected
+  LayerBlendMode dco_decode_layer_blend_mode(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return LayerBlendMode.values[raw as int];
   }
 
   @protected
@@ -758,13 +839,22 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_name = sse_decode_String(deserializer);
     var var_opacity = sse_decode_f_64(deserializer);
     var var_visible = sse_decode_bool(deserializer);
+    var var_blendMode = sse_decode_layer_blend_mode(deserializer);
     var var_strokes = sse_decode_list_stroke(deserializer);
     return Layer(
       name: var_name,
       opacity: var_opacity,
       visible: var_visible,
+      blendMode: var_blendMode,
       strokes: var_strokes,
     );
+  }
+
+  @protected
+  LayerBlendMode sse_decode_layer_blend_mode(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var inner = sse_decode_i_32(deserializer);
+    return LayerBlendMode.values[inner];
   }
 
   @protected
@@ -949,7 +1039,17 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_String(self.name, serializer);
     sse_encode_f_64(self.opacity, serializer);
     sse_encode_bool(self.visible, serializer);
+    sse_encode_layer_blend_mode(self.blendMode, serializer);
     sse_encode_list_stroke(self.strokes, serializer);
+  }
+
+  @protected
+  void sse_encode_layer_blend_mode(
+    LayerBlendMode self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_i_32(self.index, serializer);
   }
 
   @protected

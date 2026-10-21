@@ -6,6 +6,7 @@ import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
 
 import '../models/layer.dart';
+import '../models/layer_blend.dart';
 import '../models/project.dart';
 import '../models/tool_settings.dart';
 import '../rust/api/stroke.dart' as rust;
@@ -731,6 +732,7 @@ class _CanvasScreenState extends State<CanvasScreen>
                   activeErase: erasing,
                   activeRevision: _activeRevision,
                   viewport: _viewport,
+                  activeBlend: _engine.activeLayer.blendMode,
                 ),
               ),
             ],
@@ -854,14 +856,18 @@ void _paintDocument(
     final hasActive = isActive && activePoints.isNotEmpty;
     if (layer.strokes.isEmpty && !hasActive) continue;
 
-    // 不透明度为 1 且没有擦除笔画时无需成层，省一次离屏绘制。
+    // 需要离屏合成的三种情况：带不透明度、带混层模式、含擦除笔画
+    // （clear 必须限制在本层内）。三者都不成立时直接画，省一次 saveLayer。
     final needsLayer = layer.opacity < 0.999 ||
+        !layer.blendMode.isNormal ||
         activeErase && isActive ||
         layer.strokes.any((stroke) => stroke.isEraser);
     if (needsLayer) {
       canvas.saveLayer(
         rect,
-        Paint()..color = Colors.black.withValues(alpha: layer.opacity),
+        Paint()
+          ..color = Colors.black.withValues(alpha: layer.opacity)
+          ..blendMode = layer.blendMode.blendMode,
       );
     }
 
@@ -911,6 +917,7 @@ class _CanvasPainter extends CustomPainter {
     required this.activeErase,
     required this.activeRevision,
     required this.viewport,
+    required this.activeBlend,
   });
 
   final ui.Picture picture;
@@ -925,6 +932,7 @@ class _CanvasPainter extends CustomPainter {
   final bool activeErase;
   final int activeRevision;
   final CanvasViewport viewport;
+  final LayerBlendMode activeBlend;
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -960,11 +968,16 @@ class _CanvasPainter extends CustomPainter {
     canvas.drawPicture(picture);
     if (activePoints.isEmpty) return;
 
-    final needsLayer = activeLayerOpacity < 0.999;
+    // 活动笔画要在视觉上「属于」当前图层：乘上该层的不透明度与混合模式。
+    // 注意这与提交后的结果并非严格等价——提交后是整层参与混合，而预览时
+    // 只有这一笔参与。笔画数量多时两者差异极小，绘制过程中可接受。
+    final needsLayer = activeLayerOpacity < 0.999 || !activeBlend.isNormal;
     if (needsLayer) {
       canvas.saveLayer(
         rect,
-        Paint()..color = Colors.black.withValues(alpha: activeLayerOpacity),
+        Paint()
+          ..color = Colors.black.withValues(alpha: activeLayerOpacity)
+          ..blendMode = activeBlend.blendMode,
       );
     }
     _paintStroke(canvas, rect, activePoints, activeColor, activeWidth);
@@ -982,7 +995,8 @@ class _CanvasPainter extends CustomPainter {
       oldDelegate.activeWidth != activeWidth ||
       oldDelegate.activeErase != activeErase ||
       oldDelegate.activeRevision != activeRevision ||
-      oldDelegate.viewport != viewport;
+      oldDelegate.viewport != viewport ||
+      oldDelegate.activeBlend != activeBlend;
 }
 
 /// 工具面板的尺寸方案：随屏幕短边自适应。

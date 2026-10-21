@@ -1,6 +1,7 @@
 import 'dart:math' as math;
 
 import '../models/layer.dart';
+import '../rust/api/document.dart' show LayerBlendMode;
 import '../models/stroke.dart';
 import '../rust/api/stroke.dart' as rust;
 import '../rust/api/tools.dart';
@@ -179,6 +180,75 @@ class DrawingEngine {
     _revision++;
   }
 
+  /// 设置混合模式。与不透明度同类：属于合成参数，不进撤销栈。
+  void setLayerBlendMode(String id, LayerBlendMode mode) {
+    final layer = _layerById(id);
+    if (layer == null || layer.blendMode == mode) return;
+    layer.blendMode = mode;
+    _revision++;
+  }
+
+  /// 重命名图层。改名属于内容编辑，可撤销。
+  bool renameLayer(String id, String name) {
+    final layer = _layerById(id);
+    final next = name.trim();
+    if (layer == null || next.isEmpty || next == layer.name) return false;
+
+    final previous = layer.name;
+    layer.name = next;
+    _undoStack.add(_RenameLayerEdit(id, previous, next));
+    _redoStack.clear();
+    _revision++;
+    return true;
+  }
+
+  /// 移动图层位置，索引均为**自下而上**。
+  bool moveLayer(int fromIndex, int toIndex) {
+    if (fromIndex == toIndex) return false;
+    if (fromIndex < 0 || fromIndex >= _layers.length) return false;
+    if (toIndex < 0 || toIndex >= _layers.length) return false;
+
+    final layer = _layers.removeAt(fromIndex);
+    _layers.insert(toIndex, layer);
+    _undoStack.add(_MoveLayerEdit(fromIndex, toIndex));
+    _redoStack.clear();
+    _revision++;
+    return true;
+  }
+
+  /// 向下合并：把指定图层并入它下方那一层。
+  ///
+  /// 合并结果**沿用下方图层的合成参数**（不透明度 / 混合模式 / 名称），
+  /// 上方图层的这些参数会被丢弃——这与像素图层的「合并向下」不同：
+  /// 后者可以烘焙像素，而矢量笔画无法在保留可编辑性的前提下烘焙混合效果。
+  /// 调用方应在丢弃非默认参数前向用户确认。
+  ///
+  /// 已在最底层时返回 null。
+  DrawingLayer? mergeDown(String id) {
+    final index = _layers.indexWhere((layer) => layer.id == id);
+    if (index <= 0) return null;
+
+    final upper = _layers[index];
+    final lower = _layers[index - 1];
+    final merged = List<Stroke>.of(upper.strokes);
+    final previousActive = _activeLayerId;
+
+    lower.strokes.addAll(upper.strokes);
+    _layers.removeAt(index);
+    _activeLayerId = lower.id;
+
+    _undoStack.add(_MergeDownEdit(
+      lowerId: lower.id,
+      upperLayer: upper,
+      upperIndex: index,
+      mergedStrokes: merged,
+      previousActiveId: previousActive,
+    ));
+    _redoStack.clear();
+    _revision++;
+    return lower;
+  }
+
   // ---- 撤销 / 重做 ----
 
   bool undo() {
@@ -299,6 +369,84 @@ class _AddLayerEdit implements _Edit {
     final at = index.clamp(0, engine._layers.length);
     engine._layers.insert(at, layer);
     engine._activeLayerId = layer.id;
+  }
+}
+
+/// 重命名图层。
+class _RenameLayerEdit implements _Edit {
+  _RenameLayerEdit(this.layerId, this.previousName, this.nextName);
+
+  final String layerId;
+  final String previousName;
+  final String nextName;
+
+  @override
+  void undo(DrawingEngine engine) {
+    final layer = engine._layerById(layerId);
+    if (layer != null) layer.name = previousName;
+  }
+
+  @override
+  void redo(DrawingEngine engine) {
+    final layer = engine._layerById(layerId);
+    if (layer != null) layer.name = nextName;
+  }
+}
+
+/// 移动图层位置。
+class _MoveLayerEdit implements _Edit {
+  _MoveLayerEdit(this.fromIndex, this.toIndex);
+
+  final int fromIndex;
+  final int toIndex;
+
+  @override
+  void undo(DrawingEngine engine) {
+    final layer = engine._layers.removeAt(toIndex);
+    engine._layers.insert(fromIndex, layer);
+  }
+
+  @override
+  void redo(DrawingEngine engine) {
+    final layer = engine._layers.removeAt(fromIndex);
+    engine._layers.insert(toIndex, layer);
+  }
+}
+
+/// 向下合并。
+class _MergeDownEdit implements _Edit {
+  _MergeDownEdit({
+    required this.lowerId,
+    required this.upperLayer,
+    required this.upperIndex,
+    required this.mergedStrokes,
+    required this.previousActiveId,
+  });
+
+  final String lowerId;
+  final DrawingLayer upperLayer;
+  final int upperIndex;
+
+  /// 被并入下方图层的那些笔画，撤销时按引用移除。
+  final List<Stroke> mergedStrokes;
+  final String previousActiveId;
+
+  @override
+  void undo(DrawingEngine engine) {
+    final lower = engine._layerById(lowerId);
+    if (lower != null) {
+      lower.strokes.removeWhere(mergedStrokes.contains);
+    }
+    engine._layers.insert(upperIndex, upperLayer);
+    engine._activeLayerId = previousActiveId;
+  }
+
+  @override
+  void redo(DrawingEngine engine) {
+    final lower = engine._layerById(lowerId);
+    lower?.strokes.addAll(mergedStrokes);
+    engine._layers.removeWhere((layer) => layer.id == upperLayer.id);
+    engine._activeLayerId = lowerId;
   }
 }
 

@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../../services/app_settings.dart';
 import '../../services/app_theme.dart';
 import '../../services/settings_service.dart';
 import '../../widgets/section_card.dart';
@@ -33,6 +34,19 @@ class SettingsSection extends StatelessWidget {
               showSelectedIcon: false,
               onSelectionChanged: (selection) =>
                   AppTheme.set(selection.first),
+            ),
+          ),
+        ),
+        SectionCard(
+          title: '图层',
+          child: ValueListenableBuilder<bool>(
+            valueListenable: AppSettings.liveLayerReorder,
+            builder: (context, value, _) => SwitchListTile(
+              contentPadding: EdgeInsets.zero,
+              title: const Text('即时渲染图层上下关系变化'),
+              subtitle: const Text('开启后拖动排序时画布实时重绘；关闭则松手后一次性更新'),
+              value: value,
+              onChanged: AppSettings.setLiveLayerReorder,
             ),
           ),
         ),

@@ -9,7 +9,7 @@ import 'stroke.dart';
 import 'tools.dart';
 
 // These functions are ignored because they are not marked as `pub`: `decode_layers`, `read_f32`, `read_stroke`, `read_u16`, `read_u32`
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `clone`, `clone`, `eq`, `eq`, `fmt`, `fmt`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`
 
 /// 把图层序列编码为字节流，供前端原子写入磁盘。
 Future<Uint8List> encodeDocument({required List<Layer> layers}) =>
@@ -52,12 +52,16 @@ class Layer {
 
   /// 是否参与合成。
   final bool visible;
+
+  /// 与下方图层内容的混合方式。
+  final LayerBlendMode blendMode;
   final List<Stroke> strokes;
 
   const Layer({
     required this.name,
     required this.opacity,
     required this.visible,
+    required this.blendMode,
     required this.strokes,
   });
 
@@ -67,7 +71,11 @@ class Layer {
 
   @override
   int get hashCode =>
-      name.hashCode ^ opacity.hashCode ^ visible.hashCode ^ strokes.hashCode;
+      name.hashCode ^
+      opacity.hashCode ^
+      visible.hashCode ^
+      blendMode.hashCode ^
+      strokes.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -77,5 +85,33 @@ class Layer {
           name == other.name &&
           opacity == other.opacity &&
           visible == other.visible &&
+          blendMode == other.blendMode &&
           strokes == other.strokes;
+}
+
+/// 图层混合模式。
+///
+/// 只收录与 Photoshop 同名同义、且 Skia 有直接对应实现的一组。
+/// **存储编码一经发布不可重排**，新增模式只能追加在末尾。
+enum LayerBlendMode {
+  normal,
+  multiply,
+  screen,
+  overlay,
+  darken,
+  lighten,
+  colorDodge,
+  colorBurn,
+  softLight,
+  hardLight,
+  difference,
+  exclusion;
+
+  /// 未知编码按「正常」处理：这是针对单字节损坏的容错，
+  /// 与版本兼容无关——文档版本号在解码入口已校验。
+  static Future<LayerBlendMode> fromCode({required int code}) =>
+      RustLib.instance.api.crateApiDocumentLayerBlendModeFromCode(code: code);
+
+  Future<int> toCode() =>
+      RustLib.instance.api.crateApiDocumentLayerBlendModeToCode(that: this);
 }

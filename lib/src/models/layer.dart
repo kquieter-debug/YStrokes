@@ -11,6 +11,7 @@ class DrawingLayer {
     required this.name,
     this.opacity = 1.0,
     this.visible = true,
+    this.blendMode = rust_doc.LayerBlendMode.normal,
     List<Stroke>? strokes,
   }) : strokes = strokes ?? <Stroke>[];
 
@@ -25,6 +26,9 @@ class DrawingLayer {
 
   bool visible;
 
+  /// 与下方图层内容的混合方式。
+  rust_doc.LayerBlendMode blendMode;
+
   final List<Stroke> strokes;
 
   bool get isEmpty => strokes.isEmpty;
@@ -33,6 +37,7 @@ class DrawingLayer {
         name: name,
         opacity: opacity,
         visible: visible,
+        blendMode: blendMode,
         strokes: strokes.map((stroke) => stroke.toRust()).toList(),
       );
 
@@ -42,6 +47,7 @@ class DrawingLayer {
         name: source.name,
         opacity: source.opacity.clamp(0.0, 1.0),
         visible: source.visible,
+        blendMode: source.blendMode,
         strokes: source.strokes.map(Stroke.fromRust).toList(),
       );
 }

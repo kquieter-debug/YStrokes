@@ -4,12 +4,12 @@
 //!
 //! ```text
 //! header : magic "YSTK"(4) | version u16 | layer_count u32
-//! layer  : name_len u16 | name utf8 | opacity f32 | visible u8 | stroke_count u32
+//! layer  : name_len u16 | name utf8 | opacity f32 | visible u8 | blend u8 | stroke_count u32
 //! stroke : id u32 | color u32 | width f32 | point_count u32 | tool u8
 //! point  : x f32 | y f32 | pressure f32 | timestamp_ms u32
 //! ```
 //!
-//! 当前版本 v3（含图层）。解码只接受 v3：项目尚未发布，旧格式不做兼容，
+//! 当前版本 v4（图层 + 混合模式）。解码只接受 v4：项目尚未发布，旧格式不做兼容，
 //! 与其把旧结构折算成新结构、留下含糊的中间状态，不如在解码处直接拒绝。
 //! `version` 字段保留，用于后续格式演进时精确识别。
 //!
@@ -23,7 +23,7 @@ use super::tools::ToolKind;
 const DOC_MAGIC: [u8; 4] = *b"YSTK";
 
 /// 当前写入的文档版本。
-pub const DOC_VERSION: u16 = 3;
+pub const DOC_VERSION: u16 = 4;
 
 /// 头部长度：magic(4) + version(2) + layer_count(4)。
 const DOC_HEADER_LEN: usize = 10;
@@ -31,15 +31,73 @@ const DOC_HEADER_LEN: usize = 10;
 /// 单条笔画头部：id + color + width + point_count + tool。
 const STROKE_HEADER: usize = 17;
 
-/// v3 图层头部中与名称无关的固定部分：
-/// name_len(2) + opacity(4) + visible(1) + stroke_count(4)。
-const LAYER_HEADER_FIXED: usize = 11;
+/// 图层头部中与名称无关的固定部分：
+/// name_len(2) + opacity(4) + visible(1) + blend(1) + stroke_count(4)。
+const LAYER_HEADER_FIXED: usize = 12;
 
 /// 单个采样点长度：x + y + pressure + timestamp。
 const POINT_LEN: usize = 16;
 
 /// 图层名长度上限，防止损坏文件把它解释成一个巨大的分配。
 const MAX_LAYER_NAME_LEN: usize = 512;
+
+/// 图层混合模式。
+///
+/// 只收录与 Photoshop 同名同义、且 Skia 有直接对应实现的一组。
+/// **存储编码一经发布不可重排**，新增模式只能追加在末尾。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LayerBlendMode {
+    Normal,
+    Multiply,
+    Screen,
+    Overlay,
+    Darken,
+    Lighten,
+    ColorDodge,
+    ColorBurn,
+    SoftLight,
+    HardLight,
+    Difference,
+    Exclusion,
+}
+
+impl LayerBlendMode {
+    pub fn to_code(self) -> u8 {
+        match self {
+            LayerBlendMode::Normal => 0,
+            LayerBlendMode::Multiply => 1,
+            LayerBlendMode::Screen => 2,
+            LayerBlendMode::Overlay => 3,
+            LayerBlendMode::Darken => 4,
+            LayerBlendMode::Lighten => 5,
+            LayerBlendMode::ColorDodge => 6,
+            LayerBlendMode::ColorBurn => 7,
+            LayerBlendMode::SoftLight => 8,
+            LayerBlendMode::HardLight => 9,
+            LayerBlendMode::Difference => 10,
+            LayerBlendMode::Exclusion => 11,
+        }
+    }
+
+    /// 未知编码按「正常」处理：这是针对单字节损坏的容错，
+    /// 与版本兼容无关——文档版本号在解码入口已校验。
+    pub fn from_code(code: u8) -> Self {
+        match code {
+            1 => LayerBlendMode::Multiply,
+            2 => LayerBlendMode::Screen,
+            3 => LayerBlendMode::Overlay,
+            4 => LayerBlendMode::Darken,
+            5 => LayerBlendMode::Lighten,
+            6 => LayerBlendMode::ColorDodge,
+            7 => LayerBlendMode::ColorBurn,
+            8 => LayerBlendMode::SoftLight,
+            9 => LayerBlendMode::HardLight,
+            10 => LayerBlendMode::Difference,
+            11 => LayerBlendMode::Exclusion,
+            _ => LayerBlendMode::Normal,
+        }
+    }
+}
 
 /// 一个图层。
 ///
@@ -51,6 +109,8 @@ pub struct Layer {
     pub opacity: f64,
     /// 是否参与合成。
     pub visible: bool,
+    /// 与下方图层内容的混合方式。
+    pub blend_mode: LayerBlendMode,
     pub strokes: Vec<Stroke>,
 }
 
@@ -60,6 +120,7 @@ impl Layer {
             name,
             opacity: 1.0,
             visible: true,
+            blend_mode: LayerBlendMode::Normal,
             strokes: Vec::new(),
         }
     }
@@ -102,6 +163,7 @@ pub fn encode_document(layers: Vec<Layer>) -> Vec<u8> {
         out.extend_from_slice(&name[..name_len]);
         out.extend_from_slice(&(layer.opacity as f32).to_le_bytes());
         out.push(if layer.visible { 1 } else { 0 });
+        out.push(layer.blend_mode.to_code());
         out.extend_from_slice(&(layer.strokes.len() as u32).to_le_bytes());
 
         for stroke in &layer.strokes {
@@ -173,7 +235,7 @@ fn decode_layers(data: &[u8], layer_count: usize) -> DecodeOutcome {
         let name_len = read_u16(data, cursor) as usize;
         cursor += 2;
 
-        if name_len > MAX_LAYER_NAME_LEN || data.len() < cursor + name_len + 9 {
+        if name_len > MAX_LAYER_NAME_LEN || data.len() < cursor + name_len + 10 {
             error = Some(format!("第 {} 个图层的名称长度非法或已截断", index + 1));
             break;
         }
@@ -182,13 +244,15 @@ fn decode_layers(data: &[u8], layer_count: usize) -> DecodeOutcome {
 
         let opacity = read_f32(data, cursor) as f64;
         let visible = data[cursor + 4] != 0;
-        let stroke_count = read_u32(data, cursor + 5) as usize;
-        cursor += 9;
+        let blend_mode = LayerBlendMode::from_code(data[cursor + 5]);
+        let stroke_count = read_u32(data, cursor + 6) as usize;
+        cursor += 10;
 
         let mut layer = Layer {
             name,
             opacity: opacity.clamp(0.0, 1.0),
             visible,
+            blend_mode,
             strokes: Vec::new(),
         };
         let mut layer_error = None;
@@ -302,12 +366,14 @@ mod tests {
                 name: "背景".to_string(),
                 opacity: 1.0,
                 visible: true,
+                blend_mode: LayerBlendMode::Normal,
                 strokes: vec![sample_stroke(0, ToolKind::Brush)],
             },
             Layer {
                 name: "线稿".to_string(),
                 opacity: 0.4,
                 visible: false,
+                blend_mode: LayerBlendMode::Multiply,
                 strokes: vec![
                     sample_stroke(7, ToolKind::Brush),
                     sample_stroke(8, ToolKind::Eraser),
@@ -329,6 +395,8 @@ mod tests {
         assert_eq!(decoded[1].name, original[1].name);
         assert!((decoded[1].opacity - 0.4).abs() < 1e-6);
         assert!(!decoded[1].visible);
+        assert_eq!(decoded[1].blend_mode, LayerBlendMode::Multiply);
+        assert_eq!(decoded[0].blend_mode, LayerBlendMode::Normal);
         assert_eq!(decoded[1].strokes.len(), 2);
         assert_eq!(decoded[1].strokes[1].tool, ToolKind::Eraser);
         assert_eq!(decoded[0].strokes[0].points.len(), 3);
@@ -395,6 +463,39 @@ mod tests {
         let outcome = decode_document(bytes);
         assert!(outcome.error.is_none());
         assert_eq!(outcome.layers.len(), 2);
+    }
+
+    #[test]
+    fn every_blend_mode_survives_round_trip() {
+        for mode in [
+            LayerBlendMode::Normal,
+            LayerBlendMode::Multiply,
+            LayerBlendMode::Screen,
+            LayerBlendMode::Overlay,
+            LayerBlendMode::Darken,
+            LayerBlendMode::Lighten,
+            LayerBlendMode::ColorDodge,
+            LayerBlendMode::ColorBurn,
+            LayerBlendMode::SoftLight,
+            LayerBlendMode::HardLight,
+            LayerBlendMode::Difference,
+            LayerBlendMode::Exclusion,
+        ] {
+            let mut layer = Layer::new("层".to_string());
+            layer.blend_mode = mode;
+            let outcome = decode_document(encode_document(vec![layer]));
+            assert_eq!(outcome.layers[0].blend_mode, mode);
+        }
+    }
+
+    #[test]
+    fn unknown_blend_code_falls_back_to_normal() {
+        let mut bytes = encode_document(vec![Layer::new("层".to_string())]);
+        // 图层头：10 字节文档头 + name_len(2) + name(3 字节「层」) + opacity(4) + visible(1)
+        let blend_offset = DOC_HEADER_LEN + 2 + "层".len() + 4 + 1;
+        bytes[blend_offset] = 200;
+        let outcome = decode_document(bytes);
+        assert_eq!(outcome.layers[0].blend_mode, LayerBlendMode::Normal);
     }
 
     #[test]
