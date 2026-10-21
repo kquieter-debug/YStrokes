@@ -20,7 +20,9 @@ A vector-stroke drawing app for Android, built around how a stroke actually feel
 - **Tools**: brush and eraser. Erasing is recorded as a stroke, so undo comes for free and the document never has to store a bitmap.
 - **Layers**: each layer has its own opacity, visibility and blend mode (12 Photoshop-compatible modes); layers can be renamed, reordered by dragging, and merged down. Strokes go to the active layer and are composited per layer, so erasing only affects its own layer.
 - **Viewport**: two-finger zoom / rotate / pan with a fit-to-canvas reset; stroke coordinates are mapped back through the viewport, so they stay accurate at any zoom.
-- **Export**: PNG / JPG (1x/2x/3x/custom, transparency optional) and pure-vector SVG that keeps layer groups and turns erasers into masks; files are written to the app directory and handed to the system share sheet.
+- **Two-finger double-tap undo**: tap twice with two fingers to undo the last stroke — no need to reach for the toolbar. Zooming and rotating never trigger it by accident.
+- **Toolbar**: the floating panel can be dragged by the three-dot grip at its top; its position is remembered proportionally, so it never blocks the drawing area on landscape, tablets, or split screen.
+- **Export**: PNG / JPG (1x/2x/3x/custom, transparency optional) and pure-vector SVG that keeps layer groups and turns erasers into masks; files go straight to the default folder ("Downloads/YStrokes" on desktop) or a custom one, and the path is shown afterwards — no share sheet.
 
 ## Tech stack
 
