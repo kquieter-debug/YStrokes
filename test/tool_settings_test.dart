@@ -161,5 +161,63 @@ void main() {
       expect(result, isNotNull);
       expect(result!.widthRatio, greaterThan(0.01));
     });
+
+    testWidgets('压感开关默认随初始设置，切换后可回传', (tester) async {
+      tester.view.devicePixelRatio = 1.0;
+      tester.view.physicalSize = const Size(800, 1400);
+      addTearDown(tester.view.reset);
+
+      ToolSettings? result;
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: Builder(
+              builder: (context) => Center(
+                child: ElevatedButton(
+                  onPressed: () async {
+                    result = await showModalBottomSheet<ToolSettings>(
+                      context: context,
+                      builder: (_) => const ToolSettingsSheet(
+                        tool: ToolKind.brush,
+                        initial: ToolSettings(
+                          color: Color(0xFF000000),
+                          widthRatio: 0.01,
+                        ),
+                      ),
+                    );
+                  },
+                  child: const Text('打开'),
+                ),
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.tap(find.text('打开'));
+      await tester.pumpAndSettle();
+
+      final toggle = find.byKey(const Key('tool-pressure-switch'));
+      expect(toggle, findsOneWidget);
+      expect(
+        tester.widget<SwitchListTile>(toggle).value,
+        isFalse,
+        reason: 'ToolSettings 的压感默认关闭，画笔的默认开启由画板指定',
+      );
+
+      await tester.tap(toggle);
+      await tester.pumpAndSettle();
+      expect(tester.widget<SwitchListTile>(toggle).value, isTrue);
+
+      await tester.tap(find.text('完成'));
+      await tester.pumpAndSettle();
+
+      expect(result, isNotNull);
+      expect(result!.pressureEnabled, isTrue);
+    });
+
+    testWidgets('橡皮设置同样提供压感开关', (tester) async {
+      await open(tester, ToolKind.eraser);
+      expect(find.byKey(const Key('tool-pressure-switch')), findsOneWidget);
+    });
   });
 }

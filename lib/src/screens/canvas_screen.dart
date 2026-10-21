@@ -8,6 +8,8 @@ import 'package:flutter/material.dart';
 import '../models/layer.dart';
 import '../models/layer_blend.dart';
 import '../models/project.dart';
+import '../models/stroke.dart';
+import '../models/stroke_render_options.dart';
 import '../models/tool_settings.dart';
 import '../rust/api/stroke.dart' as rust;
 import '../rust/api/tools.dart';
@@ -63,11 +65,14 @@ class _CanvasScreenState extends State<CanvasScreen>
 
   /// 各工具各自的参数。切回某工具时，它上次用的颜色与笔宽仍在。
   final Map<ToolKind, ToolSettings> _settings = <ToolKind, ToolSettings>{
+    // 画笔默认开启压感：这是产品主张「笔触手感」的主要载体。
     ToolKind.brush: const ToolSettings(
       color: Color(0xFF000000),
       widthRatio: 0.01,
+      pressureEnabled: true,
     ),
-    // 橡皮默认比画笔粗一些：擦除时更省力，也需要更明显的视觉反馈。
+    // 橡皮默认粗一些、且不跟随压力：擦除需要的是稳定的覆盖范围，
+    // 而不是笔锋——压力一变细，擦除会变得难以控制。
     ToolKind.eraser: const ToolSettings(
       color: Color(0xFF000000),
       widthRatio: 0.03,
@@ -75,6 +80,15 @@ class _CanvasScreenState extends State<CanvasScreen>
   };
 
   ToolSettings get _activeSettings => _settings[_tool]!;
+
+  /// 当前生效的压感开关。
+  ///
+  /// 取**两个工具**的开关而不是当前工具的：画布上同时存在画笔与橡皮笔画，
+  /// 它们必须各按自己的开关渲染，否则切换工具会让已画内容跳变。
+  StrokeRenderOptions get _renderOptions => StrokeRenderOptions(
+        brushPressure: _settings[ToolKind.brush]!.pressureEnabled,
+        eraserPressure: _settings[ToolKind.eraser]!.pressureEnabled,
+      );
 
   /// 各工具的行为参数，进入画板时从 Rust 读取一次并缓存。
   ///
@@ -86,12 +100,10 @@ class _CanvasScreenState extends State<CanvasScreen>
       <ToolKind, ToolProfile>{
     ToolKind.brush: ToolProfile(
       smoothWindow: 5,
-      simplifyTolerance: 0.002,
       erases: false,
     ),
     ToolKind.eraser: ToolProfile(
       smoothWindow: 3,
-      simplifyTolerance: 0.001,
       erases: true,
     ),
   };
@@ -124,6 +136,9 @@ class _CanvasScreenState extends State<CanvasScreen>
   ui.Picture? _committedPicture;
   int _pictureRevision = -1;
   Rect _pictureRect = Rect.zero;
+
+  /// 存取（或重建）已完成笔画的渲染缓存的键之一：压感开关。
+  StrokeRenderOptions _pictureRender = StrokeRenderOptions.none;
 
   /// 画板私有的 SnackBar 宿主。
   ///
@@ -218,32 +233,36 @@ class _CanvasScreenState extends State<CanvasScreen>
     _saveTimer = Timer(_saveDebounce, () => unawaited(_flushSave()));
   }
 
+  /// 落盘。
+  ///
+  /// 用「循环到不脏」而不是「写一次 + 事后比对 revision」：后者在 [dispose]
+  /// 与在途保存重叠时会漏掉最后一版——`dispose` 里那次调用看到 `_saving` 为真
+  /// 直接返回，而被它取消的定时器也不会再来一次。循环把「期间又变脏」收敛进
+  /// 同一个 await 链，最坏情况只是多写一次。
   Future<void> _flushSave() async {
-    if (!_dirty || _saving) return;
+    if (_saving) return;
     _saving = true;
-    _dirty = false;
-    final revisionAtStart = _engine.revision;
-
     try {
-      await _documentStore.saveDocument(widget.project.id, _engine.layers);
-      await _projectStore.touchProject(widget.project.id);
-      // 缩略图与保存解耦：算完再写，不阻塞落盘主流程。
-      unawaited(_refreshThumbnail());
-      if (mounted && _saveError != null) {
-        setState(() => _saveError = null);
-      }
-    } catch (error) {
-      _dirty = true;
-      if (mounted) {
-        setState(() => _saveError = '保存失败：$error');
+      while (_dirty) {
+        _dirty = false;
+        try {
+          await _documentStore.saveDocument(widget.project.id, _engine.layers);
+          await _projectStore.touchProject(widget.project.id);
+          // 缩略图与保存解耦：算完再写，不阻塞落盘主流程。
+          unawaited(_refreshThumbnail());
+          if (mounted && _saveError != null) {
+            setState(() => _saveError = null);
+          }
+        } catch (error) {
+          _dirty = true;
+          if (mounted) {
+            setState(() => _saveError = '保存失败：$error');
+          }
+          break; // 失败后不再重试，避免瞬时故障变成忙循环
+        }
       }
     } finally {
       _saving = false;
-    }
-
-    // 落盘期间又有新改动：这一版还没写下去，补一次。
-    if (_engine.revision != revisionAtStart) {
-      _scheduleSave();
     }
   }
 
@@ -295,6 +314,8 @@ class _CanvasScreenState extends State<CanvasScreen>
       rect,
       Color(document.backgroundArgb),
       _engine.layers,
+      // 缩略图是画板的缩小版：压感开关不跟随，列表里的预览就会和画布不符。
+      render: _renderOptions,
     );
 
     final picture = recorder.endRecording();
@@ -507,7 +528,9 @@ class _CanvasScreenState extends State<CanvasScreen>
 
   /// 打开导出页面。
   ///
-  /// 导出使用图层快照：导出过程中即使后台有状态变化也不会影响结果。
+  /// 传入的是引擎图层列表的**只读视图而非拷贝**：导出页是独立路由，期间画板
+  /// 不可操作，不存在并发改写；不复制是为了避免大文档多一份内存。
+  /// 压感开关必须一并带过去，否则导出结果与屏幕不一致。
   Future<void> _openExport() async {
     final result = await Navigator.of(context).push<ExportResult>(
       MaterialPageRoute<ExportResult>(
@@ -515,6 +538,7 @@ class _CanvasScreenState extends State<CanvasScreen>
           project: widget.project,
           layers: _engine.layers,
           activeLayerId: _engine.activeLayerId,
+          strokeRender: _renderOptions,
         ),
       ),
     );
@@ -725,7 +749,7 @@ class _CanvasScreenState extends State<CanvasScreen>
     setState(() => _tool = tool);
   }
 
-  /// 长按工具：打开该工具的参数面板（颜色、粗细）。
+  /// 长按工具：打开该工具的参数面板（颜色、粗细、压感）。
   Future<void> _openToolSettings(ToolKind tool) async {
     final result = await showModalBottomSheet<ToolSettings>(
       context: context,
@@ -737,9 +761,13 @@ class _CanvasScreenState extends State<CanvasScreen>
       ),
     );
     if (result == null || !mounted) return;
-    setState(() => _settings[tool] = result);
-    // 保底刷新：即便设置没变，也让界面重新读取一次当前参数。
-    _activeRevision++;
+    setState(() {
+      _settings[tool] = result;
+      // 压感是全局渲染开关：_ensurePicture 的缓存键含 _renderOptions，
+      // 因此下一次构建会自动重烘焙已完成内容，旧笔画随之改变粗细。
+      // 这里只需让界面重建一次；_activeRevision 保证活动笔画也重绘。
+      _activeRevision++;
+    });
   }
 
   Widget _buildCanvas() {
@@ -753,7 +781,8 @@ class _CanvasScreenState extends State<CanvasScreen>
 
         final picture = _ensurePicture(rect);
         // 橡皮进行中必须重绘整个文档，实时擦除才看得见（见 _CanvasPainter）。
-        final erasing = _tool == ToolKind.eraser && _smoother != null;
+        // 「是不是橡皮」由 Rust 的工具参数决定，不在本地另立一份判断。
+        final erasing = _profile.erases && _smoother != null;
 
         return Listener(
           behavior: HitTestBehavior.opaque,
@@ -776,11 +805,16 @@ class _CanvasScreenState extends State<CanvasScreen>
                   activeLayerOpacity: _engine.activeLayer.opacity,
                   activePoints: _activePoints,
                   activeColor: _activeSettings.color.toARGB32(),
-                  activeWidth: _activeSettings.widthRatio * rect.shortestSide,
+                  // 与已提交笔画共用同一换算，避免极细笔画在提交前后差 1px。
+                  activeWidth: strokeWidthPx(
+                    _activeSettings.widthRatio,
+                    rect.shortestSide,
+                  ),
                   activeErase: erasing,
                   activeRevision: _activeRevision,
                   viewport: _viewport,
                   activeBlend: _engine.activeLayer.blendMode,
+                  render: _renderOptions,
                 ),
               ),
             ],
@@ -792,13 +826,17 @@ class _CanvasScreenState extends State<CanvasScreen>
 
   /// 取（或重建）已完成笔画的渲染缓存。
   ///
-  /// 缓存键为「笔画版本 + 文档矩形」：旋转或分屏会改变矩形并触发一次重建，
-  /// 之后恢复稳定；绘制过程中矩形不变，故不会重复重建。
+  /// 缓存键为「笔画版本 + 文档矩形 + 压感开关」：
+  /// - 旋转或分屏会改变矩形，触发一次重建，之后恢复稳定；
+  /// - 绘制过程中矩形不变，不会重复重建；
+  /// - 压感开关是全局渲染参数，含在键里才能做到「一改开关，旧笔画跟着变宽」。
   ui.Picture _ensurePicture(Rect rect) {
+    final render = _renderOptions;
     final cached = _committedPicture;
     if (cached != null &&
         _pictureRevision == _engine.revision &&
-        _pictureRect == rect) {
+        _pictureRect == rect &&
+        _pictureRender == render) {
       return cached;
     }
     cached?.dispose();
@@ -811,12 +849,14 @@ class _CanvasScreenState extends State<CanvasScreen>
         rect,
         Color(widget.project.document.backgroundArgb),
         _engine.layers,
+        render: render,
       );
     }
     final picture = recorder.endRecording();
     _committedPicture = picture;
     _pictureRevision = _engine.revision;
     _pictureRect = rect;
+    _pictureRender = render;
     return picture;
   }
 }
@@ -843,6 +883,7 @@ class _CanvasPainter extends CustomPainter {
     required this.activeRevision,
     required this.viewport,
     required this.activeBlend,
+    required this.render,
   });
 
   final ui.Picture picture;
@@ -858,6 +899,7 @@ class _CanvasPainter extends CustomPainter {
   final int activeRevision;
   final CanvasViewport viewport;
   final LayerBlendMode activeBlend;
+  final StrokeRenderOptions render;
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -886,6 +928,7 @@ class _CanvasPainter extends CustomPainter {
         activeColor: activeColor,
         activeWidth: activeWidth,
         activeErase: true,
+        render: render,
       );
       return;
     }
@@ -905,7 +948,14 @@ class _CanvasPainter extends CustomPainter {
           ..blendMode = activeBlend.blendMode,
       );
     }
-    paintStrokePath(canvas, rect, activePoints, activeColor, activeWidth);
+    paintStrokePath(
+      canvas,
+      rect,
+      activePoints,
+      activeColor,
+      activeWidth,
+      pressure: activeErase ? render.eraserPressure : render.brushPressure,
+    );
     if (needsLayer) canvas.restore();
   }
 
@@ -921,7 +971,8 @@ class _CanvasPainter extends CustomPainter {
       oldDelegate.activeErase != activeErase ||
       oldDelegate.activeRevision != activeRevision ||
       oldDelegate.viewport != viewport ||
-      oldDelegate.activeBlend != activeBlend;
+      oldDelegate.activeBlend != activeBlend ||
+      oldDelegate.render != render;
 }
 
 /// 工具面板的尺寸方案：随屏幕短边自适应。

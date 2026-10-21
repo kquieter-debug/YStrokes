@@ -36,25 +36,21 @@ enum ToolKind {
 ///
 /// 由 Rust 作为单一事实来源，前端在进入画板时读取一次并缓存，
 /// 逐点处理仍在本地完成——热路径不跨 FFI（见 ADR-006）。
+///
+/// 只保留**真正被消费**的字段：曾经的 `simplify_tolerance` 从未被任何调用方读取
+/// （抽稀实际由 `StrokeSmoother` 的像素判距承担），已于 2026-10-21 移除——
+/// 一个不生效的「事实来源」比没有更有害。
 class ToolProfile {
   /// 平滑窗口（奇数）。
   final int smoothWindow;
 
-  /// Douglas-Peucker 容差（归一化坐标）。
-  final double simplifyTolerance;
-
   /// 是否以「擦除」方式合成（清空目标像素而非叠加颜色）。
   final bool erases;
 
-  const ToolProfile({
-    required this.smoothWindow,
-    required this.simplifyTolerance,
-    required this.erases,
-  });
+  const ToolProfile({required this.smoothWindow, required this.erases});
 
   @override
-  int get hashCode =>
-      smoothWindow.hashCode ^ simplifyTolerance.hashCode ^ erases.hashCode;
+  int get hashCode => smoothWindow.hashCode ^ erases.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -62,6 +58,5 @@ class ToolProfile {
       other is ToolProfile &&
           runtimeType == other.runtimeType &&
           smoothWindow == other.smoothWindow &&
-          simplifyTolerance == other.simplifyTolerance &&
           erases == other.erases;
 }

@@ -804,11 +804,9 @@ impl SseDecode for crate::api::tools::ToolProfile {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
         let mut var_smoothWindow = <u32>::sse_decode(deserializer);
-        let mut var_simplifyTolerance = <f64>::sse_decode(deserializer);
         let mut var_erases = <bool>::sse_decode(deserializer);
         return crate::api::tools::ToolProfile {
             smooth_window: var_smoothWindow,
-            simplify_tolerance: var_simplifyTolerance,
             erases: var_erases,
         };
     }
@@ -1047,7 +1045,6 @@ impl flutter_rust_bridge::IntoDart for crate::api::tools::ToolProfile {
     fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
         [
             self.smooth_window.into_into_dart().into_dart(),
-            self.simplify_tolerance.into_into_dart().into_dart(),
             self.erases.into_into_dart().into_dart(),
         ]
         .into_dart()
@@ -1239,7 +1236,6 @@ impl SseEncode for crate::api::tools::ToolProfile {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
         <u32>::sse_encode(self.smooth_window, serializer);
-        <f64>::sse_encode(self.simplify_tolerance, serializer);
         <bool>::sse_encode(self.erases, serializer);
     }
 }

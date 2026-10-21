@@ -41,12 +41,14 @@ impl ToolKind {
 ///
 /// 由 Rust 作为单一事实来源，前端在进入画板时读取一次并缓存，
 /// 逐点处理仍在本地完成——热路径不跨 FFI（见 ADR-006）。
+///
+/// 只保留**真正被消费**的字段：曾经的 `simplify_tolerance` 从未被任何调用方读取
+/// （抽稀实际由 `StrokeSmoother` 的像素判距承担），已于 2026-10-21 移除——
+/// 一个不生效的「事实来源」比没有更有害。
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ToolProfile {
     /// 平滑窗口（奇数）。
     pub smooth_window: u32,
-    /// Douglas-Peucker 容差（归一化坐标）。
-    pub simplify_tolerance: f64,
     /// 是否以「擦除」方式合成（清空目标像素而非叠加颜色）。
     pub erases: bool,
 }

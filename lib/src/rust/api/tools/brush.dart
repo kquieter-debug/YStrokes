@@ -10,6 +10,5 @@ import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 /// 画笔参数。
 ///
 /// - 窗口 5：在 60~120Hz 采样下足以压平抖动，又不至于让笔迹迟钝。
-/// - 容差 0.002：归一化量纲，约等于屏幕短边的 0.2%，肉眼不可辨。
 Future<ToolProfile> profile() =>
     RustLib.instance.api.crateApiToolsBrushProfile();

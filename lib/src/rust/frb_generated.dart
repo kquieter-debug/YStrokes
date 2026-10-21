@@ -773,12 +773,11 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   ToolProfile dco_decode_tool_profile(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 3)
-      throw Exception('unexpected arr length: expect 3 but see ${arr.length}');
+    if (arr.length != 2)
+      throw Exception('unexpected arr length: expect 2 but see ${arr.length}');
     return ToolProfile(
       smoothWindow: dco_decode_u_32(arr[0]),
-      simplifyTolerance: dco_decode_f_64(arr[1]),
-      erases: dco_decode_bool(arr[2]),
+      erases: dco_decode_bool(arr[1]),
     );
   }
 
@@ -976,13 +975,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   ToolProfile sse_decode_tool_profile(SseDeserializer deserializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     var var_smoothWindow = sse_decode_u_32(deserializer);
-    var var_simplifyTolerance = sse_decode_f_64(deserializer);
     var var_erases = sse_decode_bool(deserializer);
-    return ToolProfile(
-      smoothWindow: var_smoothWindow,
-      simplifyTolerance: var_simplifyTolerance,
-      erases: var_erases,
-    );
+    return ToolProfile(smoothWindow: var_smoothWindow, erases: var_erases);
   }
 
   @protected
@@ -1152,7 +1146,6 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   void sse_encode_tool_profile(ToolProfile self, SseSerializer serializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_u_32(self.smoothWindow, serializer);
-    sse_encode_f_64(self.simplifyTolerance, serializer);
     sse_encode_bool(self.erases, serializer);
   }
 
