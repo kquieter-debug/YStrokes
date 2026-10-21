@@ -1,9 +1,12 @@
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import 'package:ystrokes/src/models/document_spec.dart';
+import 'package:ystrokes/src/models/export_destination.dart';
 import 'package:ystrokes/src/models/layer.dart';
 import 'package:ystrokes/src/models/project.dart';
 import 'package:ystrokes/src/models/stroke.dart';
@@ -12,7 +15,44 @@ import 'package:ystrokes/src/rust/api/document.dart' show LayerBlendMode;
 import 'package:ystrokes/src/rust/api/stroke.dart' as rust;
 import 'package:ystrokes/src/rust/api/tools.dart';
 import 'package:ystrokes/src/screens/export_screen.dart';
+import 'package:ystrokes/src/services/app_settings.dart';
+import 'package:ystrokes/src/services/export_bridge.dart';
 import 'package:ystrokes/src/services/exporter.dart';
+
+/// 目录选择器的替身：宿主平台没有原生通道，选择器返回值必须能注入。
+class _FakeBridge implements ExportBridge {
+  PickedDirectory? pickResult;
+  bool pickThrows = false;
+  int pickCalls = 0;
+
+  @override
+  Future<bool> canSaveToPublicDownloads() async => false;
+
+  @override
+  Future<PickedDirectory?> pickDirectory() async {
+    pickCalls++;
+    if (pickThrows) throw const ExportBridgeException('系统选择器不可用');
+    return pickResult;
+  }
+
+  @override
+  Future<SavedExport?> saveToDirectoryTree({
+    required String treeUri,
+    required Uint8List bytes,
+    required String fileName,
+    required String mimeType,
+    String? label,
+  }) async =>
+      null;
+
+  @override
+  Future<SavedExport?> saveToPublicDownloads({
+    required Uint8List bytes,
+    required String fileName,
+    required String mimeType,
+  }) async =>
+      null;
+}
 
 /// 记录参数、不落盘的导出器。
 ///
@@ -21,7 +61,7 @@ import 'package:ystrokes/src/services/exporter.dart';
 class _RecordingExporter extends DocumentExporter {
   ExportOptions? lastOptions;
   StrokeRenderOptions? lastRender;
-  String? lastOutputDirectory;
+  ExportDestination? lastDestination;
   int calls = 0;
 
   @override
@@ -32,15 +72,16 @@ class _RecordingExporter extends DocumentExporter {
     required String activeLayerId,
     required ExportOptions options,
     StrokeRenderOptions render = StrokeRenderOptions.none,
-    String? outputDirectory,
+    ExportDestination destination = ExportDestination.platformDefault,
   }) async {
     calls++;
     lastOptions = options;
     lastRender = render;
-    lastOutputDirectory = outputDirectory;
+    lastDestination = destination;
     return ExportResult(
       file: File('${Directory.systemTemp.path}/fake.${options.extension}'),
       byteLength: 42,
+      location: destination.description,
     );
   }
 }
@@ -77,9 +118,15 @@ void main() {
       );
 
   late _RecordingExporter exporter;
+  late _FakeBridge bridge;
 
   setUp(() {
+    // 选择目录会写偏好；没有内存实现时 getInstance 走平台通道，测试里会挂住。
+    SharedPreferences.setMockInitialValues(<String, Object>{});
     exporter = _RecordingExporter();
+    bridge = _FakeBridge();
+    // 全局单例会跨用例残留：不清掉，上一个用例选的目录会带进下一个。
+    AppSettings.exportDestination.value = ExportDestination.platformDefault;
   });
 
   Future<void> pumpScreen(
@@ -97,6 +144,7 @@ void main() {
           layers: layers ?? <DrawingLayer>[layer()],
           activeLayerId: 'layer-0',
           exporter: exporter,
+          bridge: bridge,
         ),
       ),
     );
@@ -173,35 +221,78 @@ void main() {
     expect(exporter.calls, 1);
     expect(exporter.lastOptions?.format, ExportFormat.svg);
     expect(exporter.lastOptions?.scope, ExportScope.document);
-    // 未填自定义目录时保持 null，由导出器决定平台默认位置。
-    expect(exporter.lastOutputDirectory, isNull);
+    // 未选目录时保持「平台默认」，由导出器决定具体位置。
+    expect(exporter.lastDestination?.isPlatformDefault, isTrue);
   });
 
-  testWidgets('自定义目录会传给导出器', (tester) async {
-    await pumpScreen(tester);
-    await scrollTo(tester, find.byKey(const Key('export-directory')));
-
-    await tester.enterText(
-      find.byKey(const Key('export-directory')),
-      '/tmp/ystrokes-out',
+  testWidgets('通过系统选择器选定目录后传给导出器，并记住选择', (tester) async {
+    bridge.pickResult = const PickedDirectory(
+      label: '草图',
+      path: '/tmp/ystrokes-out',
     );
+    await pumpScreen(tester);
+    await scrollTo(tester, find.byKey(const Key('export-directory-pick')));
+
+    await tester.tap(find.byKey(const Key('export-directory-pick')));
     await tester.pumpAndSettle();
-    expect(find.textContaining('/tmp/ystrokes-out'), findsWidgets);
+
+    expect(bridge.pickCalls, 1);
+    expect(find.textContaining('/tmp/ystrokes-out'), findsOneWidget);
+    expect(
+      AppSettings.exportDestination.value.isDirectory,
+      isTrue,
+      reason: '选择结果应写入偏好，下次导出沿用',
+    );
 
     await tester.tap(find.byKey(const Key('export-submit')));
     await tester.pumpAndSettle();
 
-    expect(exporter.lastOutputDirectory, '/tmp/ystrokes-out');
+    expect(exporter.lastDestination?.path, '/tmp/ystrokes-out');
   });
 
-  testWidgets('清空自定义目录后回到默认位置', (tester) async {
-    await pumpScreen(tester);
-    await scrollTo(tester, find.byKey(const Key('export-directory')));
-
-    await tester.enterText(
-      find.byKey(const Key('export-directory')),
-      '/tmp/somewhere',
+  testWidgets('选择器返回 SAF 目录树时按树写入', (tester) async {
+    bridge.pickResult = const PickedDirectory(
+      label: '下载',
+      uri: 'content://com.android.externalstorage.documents/tree/primary%3ADownload',
     );
+    await pumpScreen(tester);
+    await scrollTo(tester, find.byKey(const Key('export-directory-pick')));
+
+    await tester.tap(find.byKey(const Key('export-directory-pick')));
+    await tester.pumpAndSettle();
+    expect(find.text('下载'), findsOneWidget);
+
+    await tester.tap(find.byKey(const Key('export-submit')));
+    await tester.pumpAndSettle();
+
+    expect(exporter.lastDestination?.isTree, isTrue);
+    expect(
+      exporter.lastDestination?.uri,
+      contains('content://'),
+      reason: 'SAF 目录只能靠树 URI 写入',
+    );
+  });
+
+  testWidgets('选择器报错时在页面上说明原因', (tester) async {
+    bridge.pickThrows = true;
+    await pumpScreen(tester);
+    await scrollTo(tester, find.byKey(const Key('export-directory-pick')));
+
+    await tester.tap(find.byKey(const Key('export-directory-pick')));
+    await tester.pumpAndSettle();
+
+    expect(find.textContaining('系统选择器不可用'), findsOneWidget);
+  });
+
+  testWidgets('用默认可清除已选目录', (tester) async {
+    bridge.pickResult = const PickedDirectory(
+      label: '草图',
+      path: '/tmp/somewhere',
+    );
+    await pumpScreen(tester);
+    await scrollTo(tester, find.byKey(const Key('export-directory-pick')));
+
+    await tester.tap(find.byKey(const Key('export-directory-pick')));
     await tester.pumpAndSettle();
 
     final reset = find.byKey(const Key('export-directory-reset'));
@@ -209,14 +300,12 @@ void main() {
     await tester.tap(reset);
     await tester.pumpAndSettle();
 
-    expect(
-      tester.widget<TextField>(find.byKey(const Key('export-directory'))).controller?.text,
-      isEmpty,
-    );
+    expect(reset, findsNothing, reason: '回到默认后不再显示「用默认」');
+    expect(AppSettings.exportDestination.value.isPlatformDefault, isTrue);
 
     await tester.tap(find.byKey(const Key('export-submit')));
     await tester.pumpAndSettle();
-    expect(exporter.lastOutputDirectory, isNull);
+    expect(exporter.lastDestination?.isPlatformDefault, isTrue);
   });
 
   testWidgets('自定义尺寸与透明开关会传到导出器', (tester) async {

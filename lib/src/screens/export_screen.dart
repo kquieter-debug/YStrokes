@@ -1,11 +1,14 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import '../models/export_destination.dart';
 import '../models/layer.dart';
 import '../models/layer_blend.dart';
 import '../models/project.dart';
 import '../models/stroke_render_options.dart';
+import '../services/app_settings.dart';
 import '../services/document_painter.dart';
+import '../services/export_bridge.dart';
 import '../services/exporter.dart';
 import '../widgets/section_card.dart';
 
@@ -25,6 +28,7 @@ class ExportScreen extends StatefulWidget {
     required this.activeLayerId,
     this.strokeRender = StrokeRenderOptions.none,
     this.exporter,
+    this.bridge,
   });
 
   final DrawingProject project;
@@ -39,6 +43,9 @@ class ExportScreen extends StatefulWidget {
 
   /// 仅测试注入。
   final DocumentExporter? exporter;
+
+  /// 仅测试注入；生产环境走平台通道 / 系统目录选择器。
+  final ExportBridge? bridge;
 
   @override
   State<ExportScreen> createState() => _ExportScreenState();
@@ -59,11 +66,17 @@ class _ExportScreenState extends State<ExportScreen> {
   late final TextEditingController _heightController;
   bool _lockAspect = true;
 
-  /// 自定义保存目录；留空表示使用平台默认位置。
-  late final TextEditingController _dirController;
+  late final ExportBridge _bridge =
+      widget.bridge ?? const PlatformExportBridge();
+
+  /// 当前导出目标；进入页面时沿用上次的选择。
+  ExportDestination _destination = ExportDestination.platformDefault;
 
   /// 平台默认目录（异步解析，失败时保持 null，界面回落到中性文案）。
   String? _defaultDir;
+
+  /// 系统目录选择器是否正在前台。
+  bool _picking = false;
 
   bool _transparent = true;
   int _quality = 92;
@@ -112,7 +125,7 @@ class _ExportScreenState extends State<ExportScreen> {
     super.initState();
     _widthController = TextEditingController(text: '$_baseWidth');
     _heightController = TextEditingController(text: '$_baseHeight');
-    _dirController = TextEditingController();
+    _destination = AppSettings.exportDestination.value;
     _loadDefaultDir();
   }
 
@@ -134,14 +147,44 @@ class _ExportScreenState extends State<ExportScreen> {
   void dispose() {
     _widthController.dispose();
     _heightController.dispose();
-    _dirController.dispose();
     super.dispose();
   }
 
-  /// 本次导出使用的自定义目录；留空则返回 null（走默认位置）。
-  String? get _customDirectory {
-    final text = _dirController.text.trim();
-    return text.isEmpty ? null : text;
+  /// 唤起系统文件管理器选择导出目录。
+  ///
+  /// 桌面端是原生目录对话框（拿到绝对路径），Android 是 SAF 目录树（拿到
+  /// `content://` 树 URI）。两者的差异由 [ExportBridge] 吸收，这里只关心
+  /// 「选到了什么」。
+  Future<void> _pickDirectory() async {
+    if (_picking || _busy) return;
+    setState(() {
+      _picking = true;
+      _error = null;
+    });
+
+    try {
+      final picked = await _bridge.pickDirectory();
+      if (!mounted) return;
+      if (picked == null) return; // 用户取消
+
+      final destination = picked.path != null
+          ? ExportDestination.directory(picked.path!)
+          : ExportDestination.tree(uri: picked.uri!, label: picked.label);
+      setState(() => _destination = destination);
+      await AppSettings.setExportDestination(destination);
+    } on ExportBridgeException catch (error) {
+      if (mounted) setState(() => _error = error.message);
+    } catch (error) {
+      if (mounted) setState(() => _error = '无法打开目录选择器：$error');
+    } finally {
+      if (mounted) setState(() => _picking = false);
+    }
+  }
+
+  /// 恢复平台默认位置。
+  Future<void> _resetDestination() async {
+    setState(() => _destination = ExportDestination.platformDefault);
+    await AppSettings.setExportDestination(ExportDestination.platformDefault);
   }
 
   /// 当前选项是否可用；不可用时给出原因。
@@ -265,7 +308,7 @@ class _ExportScreenState extends State<ExportScreen> {
         layers: widget.layers,
         activeLayerId: widget.activeLayerId,
         render: widget.strokeRender,
-        outputDirectory: _customDirectory,
+        destination: _destination,
         options: ExportOptions(
           format: _format,
           scope: _scope,
@@ -508,49 +551,64 @@ class _ExportScreenState extends State<ExportScreen> {
     );
   }
 
-  /// 保存位置：默认走平台目录，也可以填一个绝对路径。
+  /// 保存位置：默认走平台目录，也可以交给系统文件管理器挑一个。
   ///
-  /// 没做目录选择器：跨平台选目录需要额外的原生插件，而目标平台 Android 的
-  /// 目录选择体验本来就差。留空 + 可编辑路径能在不引入依赖的前提下覆盖
-  /// 「我想放到某个固定文件夹」这个真实需求。
+  /// 不再提供手填路径：桌面端与 Android 的目录形态不同（路径 vs SAF 树），
+  /// 手填只对前者成立，且拼错的代价是导出失败。选择器返回什么就存什么。
   Widget _buildLocation(ThemeData theme) {
-    final custom = _customDirectory;
+    final custom = _destination.isCustom;
 
     return SectionCard(
       title: '保存位置',
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          TextField(
-            key: const Key('export-directory'),
-            controller: _dirController,
-            enabled: !_busy,
-            decoration: InputDecoration(
-              labelText: '自定义目录',
-              hintText: _defaultDir ?? '默认位置',
-              prefixIcon: const Icon(Icons.folder_outlined, size: 18),
-              border: const OutlineInputBorder(),
-              isDense: true,
-            ),
-            onChanged: (_) => setState(() {}),
-          ),
-          const SizedBox(height: 8),
           Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
+              Padding(
+                padding: const EdgeInsets.only(top: 2),
+                child: Icon(
+                  custom ? Icons.folder_outlined : Icons.download_outlined,
+                  size: 18,
+                  color: theme.colorScheme.onSurfaceVariant,
+                ),
+              ),
+              const SizedBox(width: 8),
               Expanded(
                 child: Text(
-                  custom == null
-                      ? '留空时保存到默认位置：${_defaultDir ?? '（读取中）'}'
-                      : '将保存到：$custom',
+                  custom ? _destination.description : (_defaultDir ?? '默认位置'),
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
                   style: theme.textTheme.bodySmall?.copyWith(
                     color: theme.colorScheme.onSurfaceVariant,
                   ),
                 ),
               ),
-              if (custom != null)
+            ],
+          ),
+          const SizedBox(height: 10),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            crossAxisAlignment: WrapCrossAlignment.center,
+            children: [
+              OutlinedButton.icon(
+                key: const Key('export-directory-pick'),
+                onPressed: _picking || _busy ? null : _pickDirectory,
+                icon: _picking
+                    ? const SizedBox(
+                        width: 16,
+                        height: 16,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Icon(Icons.folder_open_outlined, size: 18),
+                label: Text(custom ? '重新选择目录' : '选择目录…'),
+              ),
+              if (custom)
                 TextButton(
                   key: const Key('export-directory-reset'),
-                  onPressed: () => setState(_dirController.clear),
+                  onPressed: _picking || _busy ? null : _resetDestination,
                   child: const Text('用默认'),
                 ),
             ],

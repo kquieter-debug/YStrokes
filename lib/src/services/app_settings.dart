@@ -3,6 +3,8 @@ import 'dart:ui' show Offset;
 import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import '../models/export_destination.dart';
+
 /// 应用级行为开关（非外观）。
 ///
 /// 与 `AppTheme` 一样用全局 [ValueNotifier]：设置项少且需要被多个页面读到，
@@ -11,6 +13,7 @@ abstract final class AppSettings {
   static const String _liveLayerReorderKey = 'live_layer_reorder';
   static const String _toolbarXKey = 'canvas_toolbar_x';
   static const String _toolbarYKey = 'canvas_toolbar_y';
+  static const String _exportDestinationKey = 'export_destination';
 
   /// 拖拽调整图层顺序时，是否**即时**重新合成画布。
   ///
@@ -28,6 +31,13 @@ abstract final class AppSettings {
   /// `null` 表示「从未拖动过」，由画板使用默认位置（贴左、垂直居中）。
   static final ValueNotifier<Offset?> toolbarAnchor = ValueNotifier<Offset?>(null);
 
+  /// 导出目标（默认位置 / 自选目录）。
+  ///
+  /// 记忆的是「用户上次选的位置」，而不只是本次会话的选项：导出目录一旦选定，
+  /// 下次导出理应还落在那里，否则每次都要重新挑一遍。
+  static final ValueNotifier<ExportDestination> exportDestination =
+      ValueNotifier<ExportDestination>(ExportDestination.platformDefault);
+
   static Future<void> load() async {
     final prefs = await SharedPreferences.getInstance();
     liveLayerReorder.value = prefs.getBool(_liveLayerReorderKey) ?? false;
@@ -36,6 +46,9 @@ abstract final class AppSettings {
     final y = prefs.getDouble(_toolbarYKey);
     toolbarAnchor.value =
         (x == null || y == null) ? null : Offset(x, y);
+
+    exportDestination.value =
+        ExportDestination.decode(prefs.getString(_exportDestinationKey));
   }
 
   static Future<void> setLiveLayerReorder(bool value) async {
@@ -61,6 +74,22 @@ abstract final class AppSettings {
       }
     } catch (_) {
       // 偏好不可用（例如测试环境未注册插件）：只影响下次启动的位置。
+    }
+  }
+
+  /// 记住导出目标；传默认位置等于清除自定义。
+  static Future<void> setExportDestination(ExportDestination value) async {
+    exportDestination.value = value;
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final encoded = value.encode();
+      if (encoded == null) {
+        await prefs.remove(_exportDestinationKey);
+      } else {
+        await prefs.setString(_exportDestinationKey, encoded);
+      }
+    } catch (_) {
+      // 同上：记忆失败不影响本次导出。
     }
   }
 }

@@ -639,9 +639,10 @@ class _CanvasScreenState extends State<CanvasScreen>
       ),
     );
     if (result == null || !mounted) return;
-    // 导出后不再分享，因此必须把「文件在哪」讲清楚：路径比文件名更有用。
+    // 导出后不再分享，因此必须把「文件在哪」讲清楚。
+    // Android 的产物是内容 URI（公共下载目录），没有可展示的绝对路径，故用结果里的位置描述。
     _showHint(
-      '已导出到 ${result.file.parent.path}',
+      '已导出到 ${result.location}',
       duration: const Duration(seconds: 3),
     );
   }

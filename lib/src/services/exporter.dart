@@ -8,9 +8,11 @@ import 'package:image/image.dart' as img;
 import 'package:path_provider/path_provider.dart';
 
 import '../models/document_spec.dart';
+import '../models/export_destination.dart';
 import '../models/layer.dart';
 import '../models/stroke_render_options.dart';
 import 'document_painter.dart';
+import 'export_bridge.dart';
 import 'svg_exporter.dart';
 
 /// 导出格式。
@@ -72,11 +74,26 @@ class ExportOptions {
 }
 
 /// 导出结果。
+///
+/// [file] 只在产物落到文件系统时有值；Android 走 MediaStore / SAF 时产物是
+/// 内容 URI（[uri]），没有可 `File(...)` 打开的路径。界面要展示位置时一律用
+/// [location]，不要自己拼 `file.parent.path`。
 class ExportResult {
-  const ExportResult({required this.file, required this.byteLength});
+  const ExportResult({
+    this.file,
+    required this.byteLength,
+    required this.location,
+    this.uri,
+  });
 
-  final File file;
+  final File? file;
   final int byteLength;
+
+  /// 展示用位置：目录路径，或 SAF 目录的描述名。
+  final String location;
+
+  /// `content://` URI（Android 公共目录 / SAF）；桌面端为空。
+  final String? uri;
 }
 
 /// 导出失败，`message` 可直接展示给用户。
@@ -94,10 +111,14 @@ class ExportException implements Exception {
 /// 职责边界：只负责「内容 → 字节 → 文件」，不涉及分享与界面。
 /// 分享由界面层处理，便于测试时替换。
 class DocumentExporter {
-  /// [outputRoot] 仅用于测试注入；生产环境使用应用文档目录。
-  DocumentExporter({Directory? outputRoot}) : _rootOverride = outputRoot;
+  /// [outputRoot] 仅用于测试注入；生产环境使用平台默认目录。
+  /// [bridge] 同样可注入，用于在宿主平台验证 Android 分支的编排。
+  DocumentExporter({Directory? outputRoot, ExportBridge? bridge})
+      : _rootOverride = outputRoot,
+        _bridge = bridge ?? const PlatformExportBridge();
 
   final Directory? _rootOverride;
+  final ExportBridge _bridge;
 
   /// 单次导出的像素上限。
   ///
@@ -109,8 +130,9 @@ class DocumentExporter {
   ///
   /// - 桌面端：用户「下载」目录下的 `YStrokes`。导出后不再走分享，
   ///   文件必须落在用户自己能找到的地方。
-  /// - 移动端：`getDownloadsDirectory()` 返回 null（公共下载目录需要 MediaStore
-  ///   与额外权限），回落到应用文档目录下的 `exports`，并在导出后把路径提示出来。
+  /// - 移动端：`getDownloadsDirectory()` 返回 null。Android 10 起真正的公共下载
+  ///   目录由 MediaStore 提供（见 [ExportBridge]），这里只是写入不可用时的
+  ///   兜底位置（应用文档目录下的 `exports`）。
   static Future<String> defaultOutputPath() async {
     final downloads = await getDownloadsDirectory();
     if (downloads != null) {
@@ -125,7 +147,7 @@ class DocumentExporter {
   /// [render] 必须与画板当前的压感开关一致：导出若忽略它，用户会得到
   /// 「屏幕上变宽、导出的却是固定宽度」的结果。
   ///
-  /// [outputDirectory] 为自定义保存目录（绝对路径）；为空时使用平台默认目录。
+  /// [destination] 决定写到哪里；默认走平台默认位置（Android 上即公共下载目录）。
   Future<ExportResult> export({
     required String projectName,
     required DocumentSpec document,
@@ -133,7 +155,7 @@ class DocumentExporter {
     required String activeLayerId,
     required ExportOptions options,
     StrokeRenderOptions render = StrokeRenderOptions.none,
-    String? outputDirectory,
+    ExportDestination destination = ExportDestination.platformDefault,
   }) async {
     final selected = _selectLayers(layers, options.scope, activeLayerId);
     if (selected.isEmpty) {
@@ -165,9 +187,79 @@ class DocumentExporter {
           jpeg: true, render: render),
     };
 
-    final file = await _writeFile(projectName, options, bytes, outputDirectory);
-    return ExportResult(file: file, byteLength: bytes.length);
+    return _persist(projectName, options, bytes, destination);
   }
+
+  /// 按目标写入产物。
+  ///
+  /// 顺序是有意的：先问系统能力（Android 公共下载 / SAF 树），能力不可用才回落到
+  /// 文件系统。反过来做会让 Android 上的「公共下载」悄悄退化成应用私有目录。
+  Future<ExportResult> _persist(
+    String projectName,
+    ExportOptions options,
+    Uint8List bytes,
+    ExportDestination destination,
+  ) async {
+    final fileName = _fileName(projectName, options);
+    final mimeType = _mimeType(options);
+
+    if (destination.isPlatformDefault &&
+        await _bridge.canSaveToPublicDownloads()) {
+      final saved = await _bridge.saveToPublicDownloads(
+        bytes: bytes,
+        fileName: fileName,
+        mimeType: mimeType,
+      );
+      if (saved != null) {
+        return ExportResult(
+          byteLength: bytes.length,
+          location: saved.location,
+          uri: saved.uri,
+        );
+      }
+    }
+
+    if (destination.isTree) {
+      final uri = destination.uri;
+      if (uri == null) {
+        throw const ExportException('导出目录无效，请重新选择');
+      }
+      final saved = await _bridge.saveToDirectoryTree(
+        treeUri: uri,
+        bytes: bytes,
+        fileName: fileName,
+        mimeType: mimeType,
+        label: destination.label,
+      );
+      if (saved != null) {
+        return ExportResult(
+          byteLength: bytes.length,
+          location: saved.location,
+          uri: saved.uri,
+        );
+      }
+      throw const ExportException('所选目录不可写，请重新选择导出目录');
+    }
+
+    final file = await _writeFile(projectName, options, bytes, destination);
+    return ExportResult(
+      file: file,
+      byteLength: bytes.length,
+      location: file.parent.path,
+    );
+  }
+
+  /// 产物 MIME 类型：MediaStore / SAF 需要它来决定文件归类。
+  static String _mimeType(ExportOptions options) => switch (options.format) {
+        ExportFormat.png => 'image/png',
+        ExportFormat.jpg => 'image/jpeg',
+        ExportFormat.svg => 'image/svg+xml',
+      };
+
+  /// 产物文件名（含扩展名）。
+  String _fileName(String projectName, ExportOptions options) =>
+      '${_safeFileName(projectName)}_${_timestamp()}.${options.extension}';
+
 
   /// 逐层批量导出（**预留接口，暂未实现**）。
   ///
@@ -256,9 +348,9 @@ class DocumentExporter {
     String projectName,
     ExportOptions options,
     Uint8List bytes,
-    String? outputDirectory,
+    ExportDestination destination,
   ) async {
-    final dir = await _resolveOutputDir(outputDirectory);
+    final dir = await _resolveOutputDir(destination);
 
     try {
       if (!await dir.exists()) {
@@ -285,10 +377,12 @@ class DocumentExporter {
     }
   }
 
-  /// 解析实际写入目录：自定义路径优先，其次平台默认。
-  Future<Directory> _resolveOutputDir(String? outputDirectory) async {
-    final custom = outputDirectory?.trim() ?? '';
-    if (custom.isNotEmpty) return Directory(custom);
+  /// 解析实际写入目录：文件系统路径优先，其次平台默认。
+  Future<Directory> _resolveOutputDir(ExportDestination destination) async {
+    final custom = destination.path?.trim() ?? '';
+    if (destination.isDirectory && custom.isNotEmpty) {
+      return Directory(custom);
+    }
 
     // 测试注入的根目录沿用「根/exports」布局，与真实默认位置同构。
     final override = _rootOverride;

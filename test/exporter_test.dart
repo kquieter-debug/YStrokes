@@ -1,15 +1,63 @@
 import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:ystrokes/src/models/document_spec.dart';
+import 'package:ystrokes/src/models/export_destination.dart';
 import 'package:ystrokes/src/models/layer.dart';
 import 'package:ystrokes/src/models/stroke.dart';
 import 'package:ystrokes/src/models/stroke_render_options.dart';
 import 'package:ystrokes/src/rust/api/stroke.dart' as rust;
 import 'package:ystrokes/src/rust/api/tools.dart';
+import 'package:ystrokes/src/services/export_bridge.dart';
 import 'package:ystrokes/src/services/exporter.dart';
+
+/// 平台能力替身：宿主平台没有 Android 通道，只能靠注入验证分发逻辑。
+class _StubBridge implements ExportBridge {
+  _StubBridge({this.canSavePublic = false});
+
+  bool canSavePublic;
+  int publicCalls = 0;
+  int treeCalls = 0;
+  String? lastTreeUri;
+
+  @override
+  Future<bool> canSaveToPublicDownloads() async => canSavePublic;
+
+  @override
+  Future<SavedExport?> saveToPublicDownloads({
+    required Uint8List bytes,
+    required String fileName,
+    required String mimeType,
+  }) async {
+    publicCalls++;
+    return SavedExport(
+      location: 'Download/YStrokes',
+      uri: 'content://media/external/downloads/42',
+    );
+  }
+
+  @override
+  Future<PickedDirectory?> pickDirectory() async => null;
+
+  @override
+  Future<SavedExport?> saveToDirectoryTree({
+    required String treeUri,
+    required Uint8List bytes,
+    required String fileName,
+    required String mimeType,
+    String? label,
+  }) async {
+    treeCalls++;
+    lastTreeUri = treeUri;
+    return SavedExport(
+      location: label ?? '所选目录',
+      uri: 'content://com.android.externalstorage.documents/document/42',
+    );
+  }
+}
 
 /// 导出服务：文件命名、范围过滤、错误分支。
 ///
@@ -70,7 +118,7 @@ void main() {
       render: const StrokeRenderOptions(brushPressure: true),
     );
 
-    final content = utf8.decode(await result.file.readAsBytes());
+    final content = utf8.decode(await result.file!.readAsBytes());
     expect(content, contains('fill="#000000"'));
     expect(content, isNot(contains('stroke-width')));
   });
@@ -84,16 +132,16 @@ void main() {
       options: svgOptions(),
     );
 
-    expect(await result.file.exists(), isTrue);
-    expect(result.file.parent.path, endsWith('exports'));
+    expect(await result.file!.exists(), isTrue);
+    expect(result.location, endsWith('exports'));
     expect(
-      result.file.uri.pathSegments.last,
+      result.file!.uri.pathSegments.last,
       startsWith('速写_练习_'),
       reason: '路径分隔符应被替换',
     );
     expect(result.byteLength, greaterThan(0));
 
-    final content = utf8.decode(await result.file.readAsBytes());
+    final content = utf8.decode(await result.file!.readAsBytes());
     expect(content, contains('<svg'));
   });
 
@@ -113,8 +161,8 @@ void main() {
       options: svgOptions(),
     );
 
-    expect(first.file.path, isNot(second.file.path));
-    expect(await second.file.exists(), isTrue);
+    expect(first.file!.path, isNot(second.file!.path));
+    expect(await second.file!.exists(), isTrue);
   });
 
   test('没有可见内容时拒绝导出', () async {
@@ -139,7 +187,7 @@ void main() {
       options: svgOptions(scope: ExportScope.activeLayer),
     );
 
-    final content = utf8.decode(await result.file.readAsBytes());
+    final content = utf8.decode(await result.file!.readAsBytes());
     expect(content, contains('data-name="b"'));
     expect(content, isNot(contains('data-name="a"')));
   });
@@ -168,4 +216,127 @@ void main() {
       throwsA(isA<UnsupportedError>()),
     );
   });
+
+  group('导出目标分发', () {
+    test('公共下载可用时走 MediaStore，不落文件系统', () async {
+      final bridge = _StubBridge(canSavePublic: true);
+      final target = DocumentExporter(outputRoot: temp, bridge: bridge);
+
+      final result = await target.export(
+        projectName: '公共',
+        document: document,
+        layers: [layer('a')],
+        activeLayerId: 'a',
+        options: svgOptions(),
+      );
+
+      expect(bridge.publicCalls, 1);
+      expect(result.file, isNull, reason: '内容 URI 没有文件路径');
+      expect(result.location, 'Download/YStrokes');
+      expect(result.uri, startsWith('content://'));
+      // 不该顺手在应用目录再写一份。
+      expect(await Directory('${temp.path}/exports').exists(), isFalse);
+    });
+
+    test('选了 SAF 目录树时按树写入', () async {
+      final bridge = _StubBridge();
+      final target = DocumentExporter(outputRoot: temp, bridge: bridge);
+
+      final result = await target.export(
+        projectName: '树',
+        document: document,
+        layers: [layer('a')],
+        activeLayerId: 'a',
+        options: svgOptions(),
+        destination: ExportDestination.tree(
+          uri: 'content://com.android.externalstorage.documents/tree/primary%3ADownload',
+          label: '下载',
+        ),
+      );
+
+      expect(bridge.treeCalls, 1);
+      expect(bridge.lastTreeUri, contains('tree/primary'));
+      expect(result.file, isNull);
+      expect(result.location, '下载');
+      expect(result.uri, startsWith('content://'));
+    });
+
+    test('选了文件系统目录时写到该目录', () async {
+      final custom = await Directory.systemTemp.createTemp('ystrokes_custom_');
+      addTearDown(() async {
+        if (await custom.exists()) await custom.delete(recursive: true);
+      });
+
+      final target = DocumentExporter(
+        outputRoot: temp,
+        bridge: _StubBridge(canSavePublic: true),
+      );
+      final result = await target.export(
+        projectName: '自定义',
+        document: document,
+        layers: [layer('a')],
+        activeLayerId: 'a',
+        options: svgOptions(),
+        destination: ExportDestination.directory(custom.path),
+      );
+
+      expect(result.file, isNotNull);
+      expect(result.file!.parent.path, custom.path);
+      expect(result.location, custom.path);
+    });
+
+    test('公共下载不可用时回落到默认目录', () async {
+      final bridge = _StubBridge();
+      final target = DocumentExporter(outputRoot: temp, bridge: bridge);
+
+      final result = await target.export(
+        projectName: '回落',
+        document: document,
+        layers: [layer('a')],
+        activeLayerId: 'a',
+        options: svgOptions(),
+      );
+
+      expect(bridge.publicCalls, 0);
+      expect(result.file, isNotNull);
+      expect(result.location, endsWith('exports'));
+    });
+
+    test('树目录写入失败时给出可读错误', () async {
+      final target = DocumentExporter(
+        outputRoot: temp,
+        bridge: _FailingTreeBridge(),
+      );
+
+      await expectLater(
+        target.export(
+          projectName: '失败',
+          document: document,
+          layers: [layer('a')],
+          activeLayerId: 'a',
+          options: svgOptions(),
+          destination: ExportDestination.tree(uri: 'content://broken'),
+        ),
+        throwsA(
+          isA<ExportException>().having(
+            (error) => error.message,
+            'message',
+            contains('重新选择'),
+          ),
+        ),
+      );
+    });
+  });
+}
+
+class _FailingTreeBridge extends _StubBridge {
+  @override
+  Future<SavedExport?> saveToDirectoryTree({
+    required String treeUri,
+    required Uint8List bytes,
+    required String fileName,
+    required String mimeType,
+    String? label,
+  }) async =>
+      null;
 }
