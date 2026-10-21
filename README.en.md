@@ -22,7 +22,7 @@ A vector-stroke drawing app for Android, built around how a stroke actually feel
 - **Viewport**: two-finger zoom / rotate / pan with a fit-to-canvas reset; stroke coordinates are mapped back through the viewport, so they stay accurate at any zoom.
 - **Two-finger double-tap undo**: tap twice with two fingers to undo the last stroke — no need to reach for the toolbar. Zooming and rotating never trigger it by accident.
 - **Toolbar**: the floating panel can be dragged by the three-dot grip at its top; its position is remembered proportionally, so it never blocks the drawing area on landscape, tablets, or split screen.
-- **Export**: PNG / JPG (1x/2x/3x/custom, transparency optional) and pure-vector SVG that keeps layer groups and turns erasers into masks; files go straight to the default folder ("Downloads/YStrokes" on desktop) or a custom one, and the path is shown afterwards — no share sheet.
+- **Export**: PNG / JPG (1x/2x/3x/custom, transparency optional) and pure-vector SVG that keeps layer groups and turns erasers into masks. On Android files land in the system "Downloads/YStrokes" through MediaStore; on desktop in "Downloads/YStrokes". You can pick another folder with the system file manager, and the destination is shown afterwards — no share sheet.
 
 ## Tech stack
 
