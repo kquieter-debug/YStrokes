@@ -17,7 +17,7 @@ A vector-stroke drawing app for Android, built around how a stroke actually feel
 - **Durable writes**: atomic write (temp file + rename) means a process kill never leaves a truncated document; damaged documents recover partially instead of failing outright.
 - **Undoable**: adding strokes, erasing, and clearing the canvas can all be undone.
 - **Tools**: brush and eraser. Erasing is recorded as a stroke, so undo comes for free and the document never has to store a bitmap.
-- **Layers**: each layer has its own opacity and visibility; strokes go to the active layer and are composited per layer, so erasing only affects its own layer.
+- **Layers**: each layer has its own opacity, visibility and blend mode (12 Photoshop-compatible modes); layers can be renamed, reordered by dragging, and merged down. Strokes go to the active layer and are composited per layer, so erasing only affects its own layer.
 - **Viewport**: two-finger zoom / rotate / pan with a fit-to-canvas reset; stroke coordinates are mapped back through the viewport, so they stay accurate at any zoom.
 
 ## Tech stack
@@ -113,13 +113,13 @@ Document format (all little-endian):
 
 ```
 header : "YSTK"(4) | version u16 | layer_count u32
-layer  : name_len u16 | name utf8 | opacity f32 | visible u8 | stroke_count u32
+layer  : name_len u16 | name utf8 | opacity f32 | visible u8 | blend u8 | stroke_count u32
 stroke : id u32 | color u32 | width f32 | point_count u32 | tool u8
 point  : x f32 | y f32 | pressure f32 | timestamp_ms u32
 ```
 
 Coordinates are stored as f32: normalized values live in 0–1, absolute precision is about 6e-8 — far below visible error — and the payload is half the size.
-The format is v3 (layers with opacity and visibility). The decoder accepts only the current version: the project is unreleased, so old formats are not supported — a version mismatch fails loudly instead of guessing the layout.
+The format is v4 (layers with opacity, visibility and blend mode). The decoder accepts only the current version: the project is unreleased, so old formats are not supported — a version mismatch fails loudly instead of guessing the layout.
 
 ### Stroke processing
 
@@ -160,7 +160,7 @@ flutter analyze                              # static analysis
 
 - Android only; the `windows/` project exists to debug rendering, not as a delivery target.
 - The tool panel is fixed at two columns with no collapse, and offers no custom colors or widths.
-- No export or layer blend modes yet; layers currently support opacity and visibility only.
+- No export, layer groups or masks yet; merge-down discards the upper layer's opacity and blend mode (confirmed with the user first).
 
 ## License
 
