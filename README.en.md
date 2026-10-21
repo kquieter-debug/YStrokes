@@ -19,6 +19,7 @@ A vector-stroke drawing app for Android, built around how a stroke actually feel
 - **Tools**: brush and eraser. Erasing is recorded as a stroke, so undo comes for free and the document never has to store a bitmap.
 - **Layers**: each layer has its own opacity, visibility and blend mode (12 Photoshop-compatible modes); layers can be renamed, reordered by dragging, and merged down. Strokes go to the active layer and are composited per layer, so erasing only affects its own layer.
 - **Viewport**: two-finger zoom / rotate / pan with a fit-to-canvas reset; stroke coordinates are mapped back through the viewport, so they stay accurate at any zoom.
+- **Export**: PNG / JPG (1x/2x/3x/custom, transparency optional) and pure-vector SVG that keeps layer groups and turns erasers into masks; files are written to the app directory and handed to the system share sheet.
 
 ## Tech stack
 
@@ -160,7 +161,8 @@ flutter analyze                              # static analysis
 
 - Android only; the `windows/` project exists to debug rendering, not as a delivery target.
 - The tool panel is fixed at two columns with no collapse, and offers no custom colors or widths.
-- No export, layer groups or masks yet; merge-down discards the upper layer's opacity and blend mode (confirmed with the user first).
+- No layer groups or masks yet; merge-down discards the upper layer's opacity and blend mode (confirmed with the user first).
+- No per-layer batch export yet; SVG export is disabled when the document contains raster content.
 
 ## License
 
