@@ -1,4 +1,9 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- Android 10 起写公共下载目录走 MediaStore，无需权限；9 及以下仍需存储权限，
+         因此只对旧系统声明。用户拒绝时导出会提示改用「选择目录」（SAF 无需权限）。 -->
+    <uses-permission
+        android:name="android.permission.WRITE_EXTERNAL_STORAGE"
+        android:maxSdkVersion="28" />
     <application
         android:label="Ystrokes"
         android:name="${applicationName}"
