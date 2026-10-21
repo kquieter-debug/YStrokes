@@ -1,8 +1,5 @@
-import 'dart:io';
-
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:share_plus/share_plus.dart';
 
 import '../models/layer.dart';
 import '../models/layer_blend.dart';
@@ -14,9 +11,12 @@ import '../widgets/section_card.dart';
 
 /// 导出页面。
 ///
-/// 结构：格式 → 预览 → 范围 → 尺寸 → 选项。所有能力都围绕一个判据展开：
+/// 结构：预览 → 格式 → 范围 → 尺寸 → 选项 → 保存位置。所有能力都围绕一个判据展开：
 /// **可见图层是否全部为矢量**。含位图时 SVG 置灰并提示，自动落到 PNG；
 /// 隐藏图层不参与判定，也不进入导出结果。
+///
+/// 这里**只负责把文件写出来**，不再唤起系统分享：分享面板会打断「导出 → 继续画」
+/// 的节奏，而且路径不可见。导出完成后由画板把所在目录提示出来。
 class ExportScreen extends StatefulWidget {
   const ExportScreen({
     super.key,
@@ -25,7 +25,6 @@ class ExportScreen extends StatefulWidget {
     required this.activeLayerId,
     this.strokeRender = StrokeRenderOptions.none,
     this.exporter,
-    this.shareFile,
   });
 
   final DrawingProject project;
@@ -40,9 +39,6 @@ class ExportScreen extends StatefulWidget {
 
   /// 仅测试注入。
   final DocumentExporter? exporter;
-
-  /// 仅测试注入；生产环境走系统分享。
-  final Future<void> Function(File file)? shareFile;
 
   @override
   State<ExportScreen> createState() => _ExportScreenState();
@@ -62,6 +58,12 @@ class _ExportScreenState extends State<ExportScreen> {
   late final TextEditingController _widthController;
   late final TextEditingController _heightController;
   bool _lockAspect = true;
+
+  /// 自定义保存目录；留空表示使用平台默认位置。
+  late final TextEditingController _dirController;
+
+  /// 平台默认目录（异步解析，失败时保持 null，界面回落到中性文案）。
+  String? _defaultDir;
 
   bool _transparent = true;
   int _quality = 92;
@@ -110,13 +112,36 @@ class _ExportScreenState extends State<ExportScreen> {
     super.initState();
     _widthController = TextEditingController(text: '$_baseWidth');
     _heightController = TextEditingController(text: '$_baseHeight');
+    _dirController = TextEditingController();
+    _loadDefaultDir();
+  }
+
+  /// 读出平台默认目录用于展示。
+  ///
+  /// 失败不影响导出（导出时会重新解析），因此只吞掉异常、让界面显示
+  /// 「默认位置」四个字。
+  Future<void> _loadDefaultDir() async {
+    try {
+      final path = await DocumentExporter.defaultOutputPath();
+      if (!mounted) return;
+      setState(() => _defaultDir = path);
+    } catch (_) {
+      // 忽略：路径只是提示，不参与逻辑。
+    }
   }
 
   @override
   void dispose() {
     _widthController.dispose();
     _heightController.dispose();
+    _dirController.dispose();
     super.dispose();
+  }
+
+  /// 本次导出使用的自定义目录；留空则返回 null（走默认位置）。
+  String? get _customDirectory {
+    final text = _dirController.text.trim();
+    return text.isEmpty ? null : text;
   }
 
   /// 当前选项是否可用；不可用时给出原因。
@@ -240,6 +265,7 @@ class _ExportScreenState extends State<ExportScreen> {
         layers: widget.layers,
         activeLayerId: widget.activeLayerId,
         render: widget.strokeRender,
+        outputDirectory: _customDirectory,
         options: ExportOptions(
           format: _format,
           scope: _scope,
@@ -250,7 +276,6 @@ class _ExportScreenState extends State<ExportScreen> {
         ),
       );
 
-      await (widget.shareFile ?? _share)(result.file);
       if (!mounted) return;
       Navigator.of(context).pop(result);
     } catch (error) {
@@ -259,15 +284,6 @@ class _ExportScreenState extends State<ExportScreen> {
     } finally {
       if (mounted) setState(() => _busy = false);
     }
-  }
-
-  Future<void> _share(File file) async {
-    await SharePlus.instance.share(
-      ShareParams(
-        files: <XFile>[XFile(file.path)],
-        text: widget.project.name,
-      ),
-    );
   }
 
   // ---- 构建 ----
@@ -292,6 +308,7 @@ class _ExportScreenState extends State<ExportScreen> {
                 _buildScope(theme),
                 if (_format != ExportFormat.svg) _buildSize(theme),
                 _buildOptions(theme),
+                _buildLocation(theme),
                 if (_hint(theme) != null) _hint(theme)!,
                 if (_error != null) ...[
                   const SizedBox(height: 12),
@@ -333,8 +350,8 @@ class _ExportScreenState extends State<ExportScreen> {
                   key: const Key('export-submit'),
                   onPressed:
                       blocking == null && !_busy ? _export : null,
-                  icon: const Icon(Icons.ios_share, size: 18),
-                  label: const Text('导出并分享'),
+                  icon: const Icon(Icons.download_outlined, size: 18),
+                  label: const Text('导出'),
                 ),
               ],
             ),
@@ -486,6 +503,58 @@ class _ExportScreenState extends State<ExportScreen> {
               onChanged: (value) => setState(() => _lockAspect = value),
             ),
           ],
+        ],
+      ),
+    );
+  }
+
+  /// 保存位置：默认走平台目录，也可以填一个绝对路径。
+  ///
+  /// 没做目录选择器：跨平台选目录需要额外的原生插件，而目标平台 Android 的
+  /// 目录选择体验本来就差。留空 + 可编辑路径能在不引入依赖的前提下覆盖
+  /// 「我想放到某个固定文件夹」这个真实需求。
+  Widget _buildLocation(ThemeData theme) {
+    final custom = _customDirectory;
+
+    return SectionCard(
+      title: '保存位置',
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          TextField(
+            key: const Key('export-directory'),
+            controller: _dirController,
+            enabled: !_busy,
+            decoration: InputDecoration(
+              labelText: '自定义目录',
+              hintText: _defaultDir ?? '默认位置',
+              prefixIcon: const Icon(Icons.folder_outlined, size: 18),
+              border: const OutlineInputBorder(),
+              isDense: true,
+            ),
+            onChanged: (_) => setState(() {}),
+          ),
+          const SizedBox(height: 8),
+          Row(
+            children: [
+              Expanded(
+                child: Text(
+                  custom == null
+                      ? '留空时保存到默认位置：${_defaultDir ?? '（读取中）'}'
+                      : '将保存到：$custom',
+                  style: theme.textTheme.bodySmall?.copyWith(
+                    color: theme.colorScheme.onSurfaceVariant,
+                  ),
+                ),
+              ),
+              if (custom != null)
+                TextButton(
+                  key: const Key('export-directory-reset'),
+                  onPressed: () => setState(_dirController.clear),
+                  child: const Text('用默认'),
+                ),
+            ],
+          ),
         ],
       ),
     );

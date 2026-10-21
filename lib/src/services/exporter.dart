@@ -105,10 +105,27 @@ class DocumentExporter {
   /// 已接近中端设备的安全边界；超出时应当由界面提前拦截。
   static const int maxPixels = 64 * 1000 * 1000;
 
+  /// 各平台的默认导出**目录**（绝对路径）。
+  ///
+  /// - 桌面端：用户「下载」目录下的 `YStrokes`。导出后不再走分享，
+  ///   文件必须落在用户自己能找到的地方。
+  /// - 移动端：`getDownloadsDirectory()` 返回 null（公共下载目录需要 MediaStore
+  ///   与额外权限），回落到应用文档目录下的 `exports`，并在导出后把路径提示出来。
+  static Future<String> defaultOutputPath() async {
+    final downloads = await getDownloadsDirectory();
+    if (downloads != null) {
+      return '${downloads.path}${Platform.pathSeparator}YStrokes';
+    }
+    final documents = await getApplicationDocumentsDirectory();
+    return '${documents.path}${Platform.pathSeparator}exports';
+  }
+
   /// 导出当前文档（或指定图层）。
   ///
   /// [render] 必须与画板当前的压感开关一致：导出若忽略它，用户会得到
   /// 「屏幕上变宽、导出的却是固定宽度」的结果。
+  ///
+  /// [outputDirectory] 为自定义保存目录（绝对路径）；为空时使用平台默认目录。
   Future<ExportResult> export({
     required String projectName,
     required DocumentSpec document,
@@ -116,6 +133,7 @@ class DocumentExporter {
     required String activeLayerId,
     required ExportOptions options,
     StrokeRenderOptions render = StrokeRenderOptions.none,
+    String? outputDirectory,
   }) async {
     final selected = _selectLayers(layers, options.scope, activeLayerId);
     if (selected.isEmpty) {
@@ -147,7 +165,7 @@ class DocumentExporter {
           jpeg: true, render: render),
     };
 
-    final file = await _writeFile(projectName, options, bytes);
+    final file = await _writeFile(projectName, options, bytes, outputDirectory);
     return ExportResult(file: file, byteLength: bytes.length);
   }
 
@@ -238,25 +256,46 @@ class DocumentExporter {
     String projectName,
     ExportOptions options,
     Uint8List bytes,
+    String? outputDirectory,
   ) async {
-    final root = _rootOverride ?? await getApplicationDocumentsDirectory();
-    final dir = Directory('${root.path}/exports');
-    if (!await dir.exists()) {
-      await dir.create(recursive: true);
-    }
+    final dir = await _resolveOutputDir(outputDirectory);
 
-    final base = _safeFileName(projectName);
-    final stamp = _timestamp();
-    var file = File('${dir.path}/${base}_$stamp.${options.extension}');
-    var suffix = 2;
-    // 同一秒内多次导出时避免覆盖。
-    while (await file.exists()) {
-      file = File('${dir.path}/${base}_${stamp}_$suffix.${options.extension}');
-      suffix++;
-    }
+    try {
+      if (!await dir.exists()) {
+        await dir.create(recursive: true);
+      }
 
-    await file.writeAsBytes(bytes, flush: true);
-    return file;
+      final base = _safeFileName(projectName);
+      final stamp = _timestamp();
+      var file = File('${dir.path}/${base}_$stamp.${options.extension}');
+      var suffix = 2;
+      // 同一秒内多次导出时避免覆盖。
+      while (await file.exists()) {
+        file = File('${dir.path}/${base}_${stamp}_$suffix.${options.extension}');
+        suffix++;
+      }
+
+      await file.writeAsBytes(bytes, flush: true);
+      return file;
+    } on FileSystemException catch (error) {
+      // 自定义目录可能不存在、无权限或被拔掉（U 盘），必须给出可读的原因，
+      // 否则界面只会显示一个异常类名。
+      final reason = error.osError?.message ?? error.message;
+      throw ExportException('无法写入导出目录 ${dir.path}：$reason');
+    }
+  }
+
+  /// 解析实际写入目录：自定义路径优先，其次平台默认。
+  Future<Directory> _resolveOutputDir(String? outputDirectory) async {
+    final custom = outputDirectory?.trim() ?? '';
+    if (custom.isNotEmpty) return Directory(custom);
+
+    // 测试注入的根目录沿用「根/exports」布局，与真实默认位置同构。
+    final override = _rootOverride;
+    if (override != null) {
+      return Directory('${override.path}${Platform.pathSeparator}exports');
+    }
+    return Directory(await defaultOutputPath());
   }
 
   /// 工程名可能包含路径分隔符等非法字符，统一替换并限制长度。

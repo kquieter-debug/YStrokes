@@ -21,6 +21,7 @@ import 'package:ystrokes/src/services/exporter.dart';
 class _RecordingExporter extends DocumentExporter {
   ExportOptions? lastOptions;
   StrokeRenderOptions? lastRender;
+  String? lastOutputDirectory;
   int calls = 0;
 
   @override
@@ -31,10 +32,12 @@ class _RecordingExporter extends DocumentExporter {
     required String activeLayerId,
     required ExportOptions options,
     StrokeRenderOptions render = StrokeRenderOptions.none,
+    String? outputDirectory,
   }) async {
     calls++;
     lastOptions = options;
     lastRender = render;
+    lastOutputDirectory = outputDirectory;
     return ExportResult(
       file: File('${Directory.systemTemp.path}/fake.${options.extension}'),
       byteLength: 42,
@@ -74,11 +77,9 @@ void main() {
       );
 
   late _RecordingExporter exporter;
-  late List<File> shared;
 
   setUp(() {
     exporter = _RecordingExporter();
-    shared = <File>[];
   });
 
   Future<void> pumpScreen(
@@ -96,7 +97,6 @@ void main() {
           layers: layers ?? <DrawingLayer>[layer()],
           activeLayerId: 'layer-0',
           exporter: exporter,
-          shareFile: (file) async => shared.add(file),
         ),
       ),
     );
@@ -163,7 +163,7 @@ void main() {
     expect(find.textContaining('输出尺寸过大'), findsOneWidget);
   });
 
-  testWidgets('导出 SVG 会把格式与范围传给导出器并分享文件', (tester) async {
+  testWidgets('导出 SVG 会把格式与范围传给导出器', (tester) async {
     await pumpScreen(tester);
     await selectFormat(tester, 'SVG');
 
@@ -173,8 +173,50 @@ void main() {
     expect(exporter.calls, 1);
     expect(exporter.lastOptions?.format, ExportFormat.svg);
     expect(exporter.lastOptions?.scope, ExportScope.document);
-    expect(shared, hasLength(1));
-    expect(shared.single.path, endsWith('.svg'));
+    // 未填自定义目录时保持 null，由导出器决定平台默认位置。
+    expect(exporter.lastOutputDirectory, isNull);
+  });
+
+  testWidgets('自定义目录会传给导出器', (tester) async {
+    await pumpScreen(tester);
+    await scrollTo(tester, find.byKey(const Key('export-directory')));
+
+    await tester.enterText(
+      find.byKey(const Key('export-directory')),
+      '/tmp/ystrokes-out',
+    );
+    await tester.pumpAndSettle();
+    expect(find.textContaining('/tmp/ystrokes-out'), findsWidgets);
+
+    await tester.tap(find.byKey(const Key('export-submit')));
+    await tester.pumpAndSettle();
+
+    expect(exporter.lastOutputDirectory, '/tmp/ystrokes-out');
+  });
+
+  testWidgets('清空自定义目录后回到默认位置', (tester) async {
+    await pumpScreen(tester);
+    await scrollTo(tester, find.byKey(const Key('export-directory')));
+
+    await tester.enterText(
+      find.byKey(const Key('export-directory')),
+      '/tmp/somewhere',
+    );
+    await tester.pumpAndSettle();
+
+    final reset = find.byKey(const Key('export-directory-reset'));
+    expect(reset, findsOneWidget);
+    await tester.tap(reset);
+    await tester.pumpAndSettle();
+
+    expect(
+      tester.widget<TextField>(find.byKey(const Key('export-directory'))).controller?.text,
+      isEmpty,
+    );
+
+    await tester.tap(find.byKey(const Key('export-submit')));
+    await tester.pumpAndSettle();
+    expect(exporter.lastOutputDirectory, isNull);
   });
 
   testWidgets('自定义尺寸与透明开关会传到导出器', (tester) async {
@@ -236,7 +278,6 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(exporter.calls, 0, reason: '取消后不应调用导出');
-    expect(shared, isEmpty);
   });
 
   testWidgets('提示中选择仍要导出则继续', (tester) async {
@@ -252,6 +293,5 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(exporter.calls, 1);
-    expect(shared, hasLength(1));
   });
 }
