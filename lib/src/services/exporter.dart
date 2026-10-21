@@ -9,6 +9,7 @@ import 'package:path_provider/path_provider.dart';
 
 import '../models/document_spec.dart';
 import '../models/layer.dart';
+import '../models/stroke_render_options.dart';
 import 'document_painter.dart';
 import 'svg_exporter.dart';
 
@@ -105,12 +106,16 @@ class DocumentExporter {
   static const int maxPixels = 64 * 1000 * 1000;
 
   /// 导出当前文档（或指定图层）。
+  ///
+  /// [render] 必须与画板当前的压感开关一致：导出若忽略它，用户会得到
+  /// 「屏幕上变宽、导出的却是固定宽度」的结果。
   Future<ExportResult> export({
     required String projectName,
     required DocumentSpec document,
     required List<DrawingLayer> layers,
     required String activeLayerId,
     required ExportOptions options,
+    StrokeRenderOptions render = StrokeRenderOptions.none,
   }) async {
     final selected = _selectLayers(layers, options.scope, activeLayerId);
     if (selected.isEmpty) {
@@ -129,12 +134,17 @@ class DocumentExporter {
     final Uint8List bytes = switch (options.format) {
       ExportFormat.svg => Uint8List.fromList(
           utf8.encode(
-            buildDocumentSvg(document: document, layers: selected),
+            buildDocumentSvg(
+              document: document,
+              layers: selected,
+              render: render,
+            ),
           ),
         ),
-      ExportFormat.png => await _rasterize(document, selected, options),
-      ExportFormat.jpg =>
-        await _rasterize(document, selected, options, jpeg: true),
+      ExportFormat.png => await _rasterize(document, selected, options,
+          render: render),
+      ExportFormat.jpg => await _rasterize(document, selected, options,
+          jpeg: true, render: render),
     };
 
     final file = await _writeFile(projectName, options, bytes);
@@ -144,9 +154,9 @@ class DocumentExporter {
   /// 逐层批量导出（**预留接口，暂未实现**）。
   ///
   /// 用户决定先不做批量导出，但保留入口：接入时在此按图层循环调用 [export]，
-  /// 并将结果打包（多文件或 zip）。设计约束见 `docs/EXPORT_DESIGN.md` §9。
+  /// 并将结果打包（多文件或 zip）。设计约束见 `ystrokes-agent/docs/EXPORT.md` §5。
   Future<List<ExportResult>> exportLayersSeparately() {
-    throw UnsupportedError('逐层批量导出尚未实现，见 docs/EXPORT_DESIGN.md §9');
+    throw UnsupportedError('逐层批量导出尚未实现，见 docs/EXPORT.md §5');
   }
 
   /// 过滤出真正参与导出的图层：可见、非空、且符合范围。
@@ -173,6 +183,7 @@ class DocumentExporter {
     List<DrawingLayer> layers,
     ExportOptions options, {
     bool jpeg = false,
+    StrokeRenderOptions render = StrokeRenderOptions.none,
   }) async {
     final width = options.width;
     final height = options.height;
@@ -189,6 +200,7 @@ class DocumentExporter {
       Color(document.backgroundArgb),
       layers,
       drawPaper: !transparent,
+      render: render,
     );
 
     final picture = recorder.endRecording();

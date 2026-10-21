@@ -7,6 +7,7 @@ import 'package:share_plus/share_plus.dart';
 import '../models/layer.dart';
 import '../models/layer_blend.dart';
 import '../models/project.dart';
+import '../models/stroke_render_options.dart';
 import '../services/document_painter.dart';
 import '../services/exporter.dart';
 import '../widgets/section_card.dart';
@@ -22,6 +23,7 @@ class ExportScreen extends StatefulWidget {
     required this.project,
     required this.layers,
     required this.activeLayerId,
+    this.strokeRender = StrokeRenderOptions.none,
     this.exporter,
     this.shareFile,
   });
@@ -32,6 +34,9 @@ class ExportScreen extends StatefulWidget {
   final List<DrawingLayer> layers;
 
   final String activeLayerId;
+
+  /// 画板当前的压感开关；导出必须与屏幕一致，否则「所见即所得」不成立。
+  final StrokeRenderOptions strokeRender;
 
   /// 仅测试注入。
   final DocumentExporter? exporter;
@@ -234,6 +239,7 @@ class _ExportScreenState extends State<ExportScreen> {
         document: widget.project.document,
         layers: widget.layers,
         activeLayerId: widget.activeLayerId,
+        render: widget.strokeRender,
         options: ExportOptions(
           format: _format,
           scope: _scope,
@@ -355,6 +361,7 @@ class _ExportScreenState extends State<ExportScreen> {
             paperColor: Color(document.backgroundArgb),
             transparent:
                 _format != ExportFormat.jpg && _transparent,
+            render: widget.strokeRender,
           ),
         ),
       ),
@@ -637,11 +644,13 @@ class _ExportPreviewPainter extends CustomPainter {
     required this.layers,
     required this.paperColor,
     required this.transparent,
+    required this.render,
   });
 
   final List<DrawingLayer> layers;
   final Color paperColor;
   final bool transparent;
+  final StrokeRenderOptions render;
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -652,6 +661,7 @@ class _ExportPreviewPainter extends CustomPainter {
       paperColor,
       layers,
       drawPaper: !transparent,
+      render: render,
     );
   }
 
@@ -659,5 +669,6 @@ class _ExportPreviewPainter extends CustomPainter {
   bool shouldRepaint(covariant _ExportPreviewPainter oldDelegate) =>
       !identical(oldDelegate.layers, layers) ||
       oldDelegate.paperColor != paperColor ||
-      oldDelegate.transparent != transparent;
+      oldDelegate.transparent != transparent ||
+      oldDelegate.render != render;
 }

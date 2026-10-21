@@ -7,6 +7,7 @@ import 'package:ystrokes/src/models/document_spec.dart';
 import 'package:ystrokes/src/models/layer.dart';
 import 'package:ystrokes/src/models/project.dart';
 import 'package:ystrokes/src/models/stroke.dart';
+import 'package:ystrokes/src/models/stroke_render_options.dart';
 import 'package:ystrokes/src/rust/api/document.dart' show LayerBlendMode;
 import 'package:ystrokes/src/rust/api/stroke.dart' as rust;
 import 'package:ystrokes/src/rust/api/tools.dart';
@@ -19,6 +20,7 @@ import 'package:ystrokes/src/services/exporter.dart';
 /// 「参数是否按选项传递、分享是否被调用」，落盘与编码由 `exporter_test` 覆盖。
 class _RecordingExporter extends DocumentExporter {
   ExportOptions? lastOptions;
+  StrokeRenderOptions? lastRender;
   int calls = 0;
 
   @override
@@ -28,9 +30,11 @@ class _RecordingExporter extends DocumentExporter {
     required List<DrawingLayer> layers,
     required String activeLayerId,
     required ExportOptions options,
+    StrokeRenderOptions render = StrokeRenderOptions.none,
   }) async {
     calls++;
     lastOptions = options;
+    lastRender = render;
     return ExportResult(
       file: File('${Directory.systemTemp.path}/fake.${options.extension}'),
       byteLength: 42,

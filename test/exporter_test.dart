@@ -6,6 +6,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:ystrokes/src/models/document_spec.dart';
 import 'package:ystrokes/src/models/layer.dart';
 import 'package:ystrokes/src/models/stroke.dart';
+import 'package:ystrokes/src/models/stroke_render_options.dart';
 import 'package:ystrokes/src/rust/api/stroke.dart' as rust;
 import 'package:ystrokes/src/rust/api/tools.dart';
 import 'package:ystrokes/src/services/exporter.dart';
@@ -58,6 +59,21 @@ void main() {
         width: 100,
         height: 200,
       ).copyWith(scope: scope);
+
+  test('压感开关透传到 SVG 产物', () async {
+    final result = await exporter.export(
+      projectName: '压感',
+      document: document,
+      layers: [layer('a')],
+      activeLayerId: 'a',
+      options: svgOptions(),
+      render: const StrokeRenderOptions(brushPressure: true),
+    );
+
+    final content = utf8.decode(await result.file.readAsBytes());
+    expect(content, contains('fill="#000000"'));
+    expect(content, isNot(contains('stroke-width')));
+  });
 
   test('SVG 导出写入 exports 目录，文件名清洗非法字符', () async {
     final result = await exporter.export(
