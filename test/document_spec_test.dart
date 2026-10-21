@@ -67,22 +67,6 @@ void main() {
       expect(restored.backgroundArgb, 0xFFFFFFFF);
     });
 
-    test('历史工程的宽高比可还原为等效规格', () {
-      final portrait = DocumentSpec.fromLegacyAspect(0.75);
-      expect(portrait.aspectRatio, closeTo(0.75, 1e-3));
-      expect(portrait.shortSidePx, 2048);
-
-      final landscape = DocumentSpec.fromLegacyAspect(16 / 9);
-      expect(landscape.aspectRatio, closeTo(16 / 9, 1e-3));
-      expect(landscape.shortSidePx, 2048);
-
-      // 缺失或非法时退化为 3:4，不抛错。
-      expect(
-        DocumentSpec.fromLegacyAspect(null).aspectRatio,
-        closeTo(0.75, 1e-3),
-      );
-    });
-
     test('合法性判定', () {
       expect(
         const DocumentSpec(widthPx: 1080, heightPx: 1920, dpi: 72).isValid,

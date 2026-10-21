@@ -44,16 +44,19 @@ void main() {
     expect(await store.loadProjects(), hasLength(1));
   });
 
-  test('历史数据缺少 document 时按比例还原', () async {
+  test('缺少画布规格的条目被跳过，其余正常加载', () async {
     SharedPreferences.setMockInitialValues(<String, Object>{
       'projects':
-          '[{"id":"p1","name":"旧工程","createdAt":"2026-01-01T00:00:00.000",'
-              '"updatedAt":"2026-01-01T00:00:00.000","aspectRatio":0.75}]',
+          '[{"id":"bad","name":"坏数据","createdAt":"2026-01-01T00:00:00.000",'
+              '"updatedAt":"2026-01-01T00:00:00.000"},'
+              '{"id":"ok","name":"正常","createdAt":"2026-01-01T00:00:00.000",'
+              '"updatedAt":"2026-01-02T00:00:00.000",'
+              '"document":{"widthPx":1080,"heightPx":1920,"dpi":72}}]',
     });
 
     final loaded = await ProjectStore().loadProjects();
-    expect(loaded, hasLength(1));
-    expect(loaded.single.document.aspectRatio, closeTo(0.75, 1e-3));
-    expect(loaded.single.document.dpi, 72);
+    expect(loaded, hasLength(1), reason: '坏记录不应拖垮整个列表');
+    expect(loaded.single.id, 'ok');
   });
+
 }

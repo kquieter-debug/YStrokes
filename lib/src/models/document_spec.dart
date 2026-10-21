@@ -94,27 +94,4 @@ class DocumentSpec {
             (json['backgroundArgb'] as num?)?.toInt() ?? 0xFFFFFFFF,
       );
 
-  /// 由历史工程的宽高比还原规格。
-  ///
-  /// 旧版本只保存了比例，没有像素尺寸。这里按「短边 2048px、72ppi」还原，
-  /// 保证比例完全一致、观感不变；后续导出时再按需调整。
-  factory DocumentSpec.fromLegacyAspect(double? aspectRatio) {
-    final aspect = (aspectRatio != null &&
-            aspectRatio.isFinite &&
-            aspectRatio > 0)
-        ? aspectRatio
-        : 3 / 4;
-    if (aspect >= 1) {
-      return DocumentSpec(
-        widthPx: (2048 * aspect).round(),
-        heightPx: 2048,
-        dpi: 72,
-      );
-    }
-    return DocumentSpec(
-      widthPx: 2048,
-      heightPx: (2048 / aspect).round(),
-      dpi: 72,
-    );
-  }
 }

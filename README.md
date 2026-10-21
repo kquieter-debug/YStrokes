@@ -112,13 +112,15 @@ flutter run                                # 或 flutter build apk
 文档格式（全部小端序）：
 
 ```
-header : "YSTK"(4) | version u16 | stroke_count u32
+header : "YSTK"(4) | version u16 | layer_count u32
+layer  : name_len u16 | name utf8 | opacity f32 | visible u8 | stroke_count u32
 stroke : id u32 | color u32 | width f32 | point_count u32 | tool u8
 point  : x f32 | y f32 | pressure f32 | timestamp_ms u32
 ```
 
 坐标以 f32 落盘：归一化值域固定在 0~1，绝对精度约 6e-8，远小于可见误差，存储体积减半。
-格式版本为 v2（笔画带 `tool` 字节）；解码兼容 v1，旧文件一律按画笔读取。
+格式版本为 v3（图层 + 不透明度 + 可见性）。解码只接受当前版本：项目尚未发布，
+不做旧格式兼容，版本号不匹配会明确报错而不是猜测结构。
 
 ### 笔迹处理
 

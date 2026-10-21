@@ -53,19 +53,22 @@ class DrawingProject {
         'document': document.toJson(),
       };
 
+  /// 从持久化 JSON 还原。
+  ///
+  /// 缺少 `document` 视为坏数据并抛出 [FormatException]：画布规格是工程的
+  /// 固有属性，没有它就无法渲染。调用方（`ProjectStore`）会跳过这类条目，
+  /// 而不是让整个工程列表打不开。
   factory DrawingProject.fromJson(Map<String, dynamic> json) {
     final rawDocument = json['document'];
+    if (rawDocument is! Map<String, dynamic>) {
+      throw const FormatException('工程缺少画布规格（document）');
+    }
     return DrawingProject(
       id: json['id'] as String,
       name: json['name'] as String,
       createdAt: DateTime.parse(json['createdAt'] as String),
       updatedAt: DateTime.parse(json['updatedAt'] as String),
-      document: rawDocument is Map<String, dynamic>
-          ? DocumentSpec.fromJson(rawDocument)
-          // 兼容早期版本：只有 aspectRatio，没有 document。
-          : DocumentSpec.fromLegacyAspect(
-              (json['aspectRatio'] as num?)?.toDouble(),
-            ),
+      document: DocumentSpec.fromJson(rawDocument),
     );
   }
 

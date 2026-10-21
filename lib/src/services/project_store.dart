@@ -19,9 +19,15 @@ class ProjectStore {
     if (raw == null || raw.isEmpty) return <DrawingProject>[];
 
     final list = jsonDecode(raw) as List<dynamic>;
-    final projects = list
-        .map((e) => DrawingProject.fromJson(e as Map<String, dynamic>))
-        .toList();
+    final projects = <DrawingProject>[];
+    for (final entry in list) {
+      try {
+        projects.add(DrawingProject.fromJson(entry as Map<String, dynamic>));
+      } catch (_) {
+        // 单条记录损坏（字段缺失、时间格式错误等）时跳过。
+        // 一条坏数据不应该让用户整个工程列表都打不开。
+      }
+    }
     projects.sort((a, b) => b.updatedAt.compareTo(a.updatedAt));
     return projects;
   }

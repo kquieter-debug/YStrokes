@@ -87,7 +87,7 @@ class DocumentStore {
   /// 原子写入原始字节。
   ///
   /// 先落临时文件并 flush，再重命名覆盖。绝大多数文件系统上 rename 对同分区
-  /// 是原子操作，因此读者要么看到旧版本、要么看到新版本，不会读到半截数据。
+  /// 是原子操作，因此读者要么看到上一次的内容、要么看到这一次的，不会读到半截数据。
   Future<void> writeBytes(String projectId, Uint8List bytes) async {
     final file = await _fileFor(projectId);
     await _writeAtomically(file, bytes);

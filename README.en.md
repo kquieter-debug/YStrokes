@@ -112,13 +112,14 @@ The versions in `pubspec.yaml`, `rust/Cargo.toml`, and your local `flutter_rust_
 Document format (all little-endian):
 
 ```
-header : "YSTK"(4) | version u16 | stroke_count u32
+header : "YSTK"(4) | version u16 | layer_count u32
+layer  : name_len u16 | name utf8 | opacity f32 | visible u8 | stroke_count u32
 stroke : id u32 | color u32 | width f32 | point_count u32 | tool u8
 point  : x f32 | y f32 | pressure f32 | timestamp_ms u32
 ```
 
 Coordinates are stored as f32: normalized values live in 0–1, absolute precision is about 6e-8 — far below visible error — and the payload is half the size.
-The format is v2 (each stroke carries a `tool` byte); the decoder still reads v1, treating those strokes as brush.
+The format is v3 (layers with opacity and visibility). The decoder accepts only the current version: the project is unreleased, so old formats are not supported — a version mismatch fails loudly instead of guessing the layout.
 
 ### Stroke processing
 

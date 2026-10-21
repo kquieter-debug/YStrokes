@@ -9,12 +9,9 @@
 //! point  : x f32 | y f32 | pressure f32 | timestamp_ms u32
 //! ```
 //!
-//! - v3：引入图层（名称、不透明度、可见性）。
-//! - v2：扁平笔画列表，每条笔画带 `tool`。
-//! - v1：扁平笔画列表，无 `tool`。
-//!
-//! 解码兼容 v1/v2，统一折叠成「单个图层」。**编码永远输出 v3**，因此升级是单向的：
-//! 一旦用新版本保存过，旧版本客户端就无法再打开该文档。
+//! 当前版本 v3（含图层）。解码只接受 v3：项目尚未发布，旧格式不做兼容，
+//! 与其把旧结构折算成新结构、留下含糊的中间状态，不如在解码处直接拒绝。
+//! `version` 字段保留，用于后续格式演进时精确识别。
 //!
 //! 坐标用 f32 而非 f64：归一化值域固定在 0~1，绝对精度约 6e-8，
 //! 远小于简化容差（1e-3 量级），体积却减半。
@@ -31,11 +28,8 @@ pub const DOC_VERSION: u16 = 3;
 /// 头部长度：magic(4) + version(2) + layer_count(4)。
 const DOC_HEADER_LEN: usize = 10;
 
-/// v1 单条笔画头部：id + color + width + point_count。
-const STROKE_HEADER_V1: usize = 16;
-
-/// v2/v3 单条笔画头部：id + color + width + point_count + tool。
-const STROKE_HEADER_V2: usize = 17;
+/// 单条笔画头部：id + color + width + point_count + tool。
+const STROKE_HEADER: usize = 17;
 
 /// v3 图层头部中与名称无关的固定部分：
 /// name_len(2) + opacity(4) + visible(1) + stroke_count(4)。
@@ -91,7 +85,7 @@ pub fn encode_document(layers: Vec<Layer>) -> Vec<u8> {
                 + layer
                     .strokes
                     .iter()
-                    .map(|s| STROKE_HEADER_V2 + s.points.len() * POINT_LEN)
+                    .map(|s| STROKE_HEADER + s.points.len() * POINT_LEN)
                     .sum::<usize>()
         })
         .sum();
@@ -111,8 +105,8 @@ pub fn encode_document(layers: Vec<Layer>) -> Vec<u8> {
         out.extend_from_slice(&(layer.strokes.len() as u32).to_le_bytes());
 
         for stroke in &layer.strokes {
-            // 与 v2 的笔画头保持完全一致的字节顺序：
-            // 升到 v3 只是加了图层外壳，笔画本身没有变化。
+            // 笔画头顺序固定为 id | color | width | point_count | tool，
+            // 与图层外壳解耦，便于后续只演进图层结构而不动笔画。
             out.extend_from_slice(&stroke.id.to_le_bytes());
             out.extend_from_slice(&stroke.color.to_le_bytes());
             out.extend_from_slice(&(stroke.width as f32).to_le_bytes());
@@ -150,55 +144,15 @@ pub fn decode_document(bytes: Vec<u8>) -> DecodeOutcome {
     }
 
     let version = read_u16(data, 4);
-    let layer_count = read_u32(data, 6) as usize;
-
-    match version {
-        1 | 2 => decode_flat(data, version, layer_count),
-        3 => decode_layers(data, layer_count),
-        other => DecodeOutcome {
+    if version != DOC_VERSION {
+        return DecodeOutcome {
             layers: Vec::new(),
             error: Some(format!(
-                "不支持的文档版本 {other}（当前支持 1~{DOC_VERSION}）"
+                "不支持的文档版本 {version}（当前版本 {DOC_VERSION}）"
             )),
-        },
+        };
     }
-}
-
-/// 解析 v1/v2：扁平笔画列表，折叠成单个图层。
-fn decode_flat(data: &[u8], version: u16, stroke_count: usize) -> DecodeOutcome {
-    let stroke_header_len = if version == 1 {
-        STROKE_HEADER_V1
-    } else {
-        STROKE_HEADER_V2
-    };
-    let has_tool = version >= 2;
-
-    let mut cursor = DOC_HEADER_LEN;
-    let mut strokes = Vec::new();
-    let mut error = None;
-
-    for index in 0..stroke_count {
-        match read_stroke(data, cursor, stroke_header_len, has_tool) {
-            Ok((stroke, next)) => {
-                strokes.push(stroke);
-                cursor = next;
-            }
-            Err(message) => {
-                error = Some(format!("第 {} 条笔画：{message}", index + 1));
-                break;
-            }
-        }
-    }
-
-    DecodeOutcome {
-        layers: vec![Layer {
-            name: "图层 1".to_string(),
-            opacity: 1.0,
-            visible: true,
-            strokes,
-        }],
-        error,
-    }
+    decode_layers(data, read_u32(data, 6) as usize)
 }
 
 /// 解析 v3：图层树。
@@ -240,7 +194,7 @@ fn decode_layers(data: &[u8], layer_count: usize) -> DecodeOutcome {
         let mut layer_error = None;
 
         for index in 0..stroke_count {
-            match read_stroke(data, cursor, STROKE_HEADER_V2, true) {
+            match read_stroke(data, cursor) {
                 Ok((stroke, next)) => {
                     layer.strokes.push(stroke);
                     cursor = next;
@@ -271,26 +225,17 @@ fn decode_layers(data: &[u8], layer_count: usize) -> DecodeOutcome {
 }
 
 /// 解析一条笔画，返回（笔画, 下一个游标）。
-fn read_stroke(
-    data: &[u8],
-    start: usize,
-    header_len: usize,
-    has_tool: bool,
-) -> Result<(Stroke, usize), String> {
-    if data.len() < start + header_len {
+fn read_stroke(data: &[u8], start: usize) -> Result<(Stroke, usize), String> {
+    if data.len() < start + STROKE_HEADER {
         return Err("数据截断".to_string());
     }
     let id = read_u32(data, start);
     let color = read_u32(data, start + 4);
     let width = read_f32(data, start + 8) as f64;
     let point_count = read_u32(data, start + 12) as usize;
-    let tool = if has_tool {
-        ToolKind::from_code(data[start + 16])
-    } else {
-        ToolKind::Brush
-    };
+    let tool = ToolKind::from_code(data[start + 16]);
 
-    let mut cursor = start + header_len;
+    let mut cursor = start + STROKE_HEADER;
     if point_count > data.len().saturating_sub(cursor) / POINT_LEN {
         return Err(format!("点数声明为 {point_count}，超出文件剩余长度"));
     }
@@ -371,26 +316,6 @@ mod tests {
         ]
     }
 
-    /// 手工拼一份 v2 文档（扁平笔画），用于验证旧文件兼容性。
-    fn legacy_v2_bytes() -> Vec<u8> {
-        let mut out = Vec::new();
-        out.extend_from_slice(b"YSTK");
-        out.extend_from_slice(&2u16.to_le_bytes());
-        out.extend_from_slice(&1u32.to_le_bytes());
-        out.extend_from_slice(&7u32.to_le_bytes());
-        out.extend_from_slice(&0xFF000000u32.to_le_bytes());
-        out.extend_from_slice(&(0.5f32).to_le_bytes());
-        out.extend_from_slice(&2u32.to_le_bytes());
-        out.push(ToolKind::Eraser.to_code());
-        for (x, t) in [(0.25f32, 0u32), (0.75, 16)] {
-            out.extend_from_slice(&x.to_le_bytes());
-            out.extend_from_slice(&(0.5f32).to_le_bytes());
-            out.extend_from_slice(&(1.0f32).to_le_bytes());
-            out.extend_from_slice(&t.to_le_bytes());
-        }
-        out
-    }
-
     #[test]
     fn round_trip_preserves_layers_and_strokes() {
         let original = sample_layers();
@@ -415,20 +340,6 @@ mod tests {
         assert_eq!(&bytes[0..4], b"YSTK");
         assert_eq!(read_u16(&bytes, 4), DOC_VERSION);
         assert_eq!(read_u32(&bytes, 6), 2);
-    }
-
-    #[test]
-    fn legacy_v2_document_folds_into_single_layer() {
-        let outcome = decode_document(legacy_v2_bytes());
-        assert!(outcome.error.is_none(), "{:?}", outcome.error);
-
-        assert_eq!(outcome.layers.len(), 1);
-        let layer = &outcome.layers[0];
-        assert_eq!(layer.opacity, 1.0);
-        assert!(layer.visible);
-        assert_eq!(layer.strokes.len(), 1);
-        assert_eq!(layer.strokes[0].tool, ToolKind::Eraser);
-        assert!((layer.strokes[0].points[1].x - 0.75).abs() < 1e-6);
     }
 
     #[test]
