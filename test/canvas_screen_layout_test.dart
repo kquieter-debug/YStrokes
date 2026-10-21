@@ -7,9 +7,10 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:ystrokes/src/models/document_spec.dart';
 import 'package:ystrokes/src/models/project.dart';
 import 'package:ystrokes/src/screens/canvas_screen.dart';
+import 'package:ystrokes/src/services/app_settings.dart';
 import 'package:ystrokes/src/services/document_store.dart';
 
-/// 画板布局回归：工具栏不再占用布局空间、不溢出，且贴右两列排列。
+/// 画板布局回归：工具栏不占用布局空间、不溢出，且默认贴左两列排列。
 ///
 /// 历史问题：工具栏是画布上方的单行 Row，宽度需求约 425dp，在 360dp 手机上必然
 /// `RenderFlex overflow`。这些用例锁定修复后的行为。
@@ -18,6 +19,8 @@ void main() {
 
   setUp(() async {
     SharedPreferences.setMockInitialValues(<String, Object>{});
+    // 全局单例会跨用例残留，逐个用例复位，否则「贴左」断言会被上一个用例的拖动影响。
+    AppSettings.toolbarAnchor.value = null;
     temp = await Directory.systemTemp.createTemp('ystrokes_layout_');
   });
 
@@ -117,5 +120,50 @@ void main() {
     await pumpCanvas(tester, const Size(640, 360));
     expect(tester.takeException(), isNull);
     expect(cellCenters(tester), hasLength(2));
+  });
+
+  testWidgets('没有「长按设置」提示文字', (tester) async {
+    await pumpCanvas(tester, const Size(400, 800));
+    expect(find.text('长按设置'), findsNothing);
+  });
+
+  testWidgets('拖动把手可移动面板并记住位置', (tester) async {
+    await pumpCanvas(tester, const Size(400, 800));
+
+    final handle = find.byKey(const Key('toolbar-drag-handle'));
+    expect(handle, findsOneWidget);
+    expect(
+      AppSettings.toolbarAnchor.value,
+      isNull,
+      reason: '未拖动时不该写偏好，默认位置由画板决定',
+    );
+
+    final before = tester.getCenter(handle);
+    await tester.drag(handle, const Offset(120, -90));
+    await tester.pumpAndSettle();
+
+    final after = tester.getCenter(handle);
+    expect(after.dx, greaterThan(before.dx), reason: '向右拖动应跟随');
+    expect(after.dy, lessThan(before.dy), reason: '向上拖动应跟随');
+    expect(
+      AppSettings.toolbarAnchor.value,
+      isNotNull,
+      reason: '松手后应记住归一化位置',
+    );
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('拖动不会超出可用区域', (tester) async {
+    await pumpCanvas(tester, const Size(400, 800));
+
+    final handle = find.byKey(const Key('toolbar-drag-handle'));
+    await tester.drag(handle, const Offset(2000, 2000));
+    await tester.pumpAndSettle();
+
+    final panel = tester.getRect(handle);
+    expect(panel.right, lessThanOrEqualTo(400));
+    expect(panel.bottom, lessThanOrEqualTo(800));
+    expect(AppSettings.toolbarAnchor.value!.dx, lessThanOrEqualTo(1.0));
+    expect(AppSettings.toolbarAnchor.value!.dy, lessThanOrEqualTo(1.0));
   });
 }

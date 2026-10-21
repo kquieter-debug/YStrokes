@@ -144,4 +144,55 @@ void main() {
     );
     expect(item.enabled, isFalse);
   });
+
+  group('清空当前图层', () {
+    testWidgets('空图层时按钮不可用', (tester) async {
+      await pumpSheet(tester);
+
+      expect(
+        tester.widget<TextButton>(find.byKey(const Key('layer-clear'))).onPressed,
+        isNull,
+      );
+    });
+
+    testWidgets('取消后不改动内容', (tester) async {
+      addLine();
+      await pumpSheet(tester);
+
+      await tester.tap(find.byKey(const Key('layer-clear')));
+      await tester.pumpAndSettle();
+
+      expect(find.text('清空图层'), findsOneWidget, reason: '必须有二次确认');
+      await tester.tap(find.text('取消'));
+      await tester.pumpAndSettle();
+
+      expect(engine.activeLayer.strokes, hasLength(1));
+    });
+
+    testWidgets('确认后清空并反映到列表', (tester) async {
+      addLine();
+      await pumpSheet(tester);
+
+      await tester.tap(find.byKey(const Key('layer-clear')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('layer-clear-confirm')));
+      await tester.pumpAndSettle();
+
+      expect(engine.activeLayer.strokes, isEmpty);
+      expect(find.textContaining('0 笔'), findsOneWidget);
+    });
+
+    testWidgets('清空可撤销', (tester) async {
+      addLine();
+      await pumpSheet(tester);
+
+      await tester.tap(find.byKey(const Key('layer-clear')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('layer-clear-confirm')));
+      await tester.pumpAndSettle();
+
+      expect(engine.undo(), isTrue);
+      expect(engine.activeLayer.strokes, hasLength(1));
+    });
+  });
 }

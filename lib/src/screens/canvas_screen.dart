@@ -13,6 +13,7 @@ import '../models/stroke_render_options.dart';
 import '../models/tool_settings.dart';
 import '../rust/api/stroke.dart' as rust;
 import '../rust/api/tools.dart';
+import '../services/app_settings.dart';
 import '../services/canvas_geometry.dart';
 import '../services/canvas_viewport.dart';
 import '../services/document_painter.dart';
@@ -132,6 +133,17 @@ class _CanvasScreenState extends State<CanvasScreen>
   /// 视口：缩放 / 旋转 / 平移。默认「适配画布」。
   CanvasViewport _viewport = const CanvasViewport();
 
+  /// 工具栏锚点（归一化 0~1，相对去掉外边距后的可用区域）。
+  ///
+  /// 用 `Align` + `FractionalOffset` 定位而不是 `Positioned(left, top)`：
+  /// 前者的落点天然被限制在父级范围内，不需要在拖动时反复测量面板尺寸再夹取。
+  Offset _toolbarAnchor = _defaultToolbarAnchor;
+
+  static const Offset _defaultToolbarAnchor = Offset(0, 0.5);
+
+  /// 工具栏可拖动的范围（已扣除外边距），用于把手指位移换算成归一化增量。
+  Size _toolbarDragArea = Size.zero;
+
   /// 已完成笔画的渲染缓存。
   ui.Picture? _committedPicture;
   int _pictureRevision = -1;
@@ -169,6 +181,7 @@ class _CanvasScreenState extends State<CanvasScreen>
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    _toolbarAnchor = AppSettings.toolbarAnchor.value ?? _defaultToolbarAnchor;
     _loadDocument();
     _loadToolProfiles();
   }
@@ -346,11 +359,38 @@ class _CanvasScreenState extends State<CanvasScreen>
   Offset _gestureStartPointA = Offset.zero;
   Offset _gestureStartPointB = Offset.zero;
 
+  /// 多指手势开始时刻（毫秒）；0 表示当前没有多指手势在进行。
+  int _multiTouchStartMs = 0;
+
+  /// 本次多指手势是否真的改变了视口（缩放 / 旋转 / 平移）。
+  ///
+  /// 双指双击撤销必须与双指缩放区分开：只要视口被动过，这次多指操作就
+  /// 属于「变换」而不是「轻点」。
+  bool _multiTouchTransformed = false;
+
+  /// 上一次「双指轻点」完成的时刻，用于判定双击。
+  int _lastTwoFingerTapMs = 0;
+
+  /// 一次「双指轻点」允许的最长按住时间。
+  static const Duration _twoFingerTapMaxHold = Duration(milliseconds: 300);
+
+  /// 两次「双指轻点」之间的最长间隔，超过则重新计数。
+  static const Duration _twoFingerDoubleTapWindow = Duration(milliseconds: 320);
+
+  /// 判定「没有真正移动视口」的容差（逻辑像素 / 缩放倍率 / 弧度）。
+  static const double _twoFingerTapTolerance = 12;
+  static const double _twoFingerTapScaleTolerance = 0.02;
+  static const double _twoFingerTapRotationTolerance = 0.02;
+
   void _onPointerDown(PointerDownEvent e) {
     _pointers[e.pointer] = e.localPosition;
 
     // 第二根手指落下：放弃当前笔画，转入双指变换。
     if (_pointers.length >= 2) {
+      if (_pointers.length == 2) {
+        _multiTouchStartMs = DateTime.now().millisecondsSinceEpoch;
+        _multiTouchTransformed = false;
+      }
       _beginTransform();
       return;
     }
@@ -394,8 +434,12 @@ class _CanvasScreenState extends State<CanvasScreen>
   void _onPointerUp(PointerUpEvent e) {
     _pointers.remove(e.pointer);
 
-    if (_transforming) {
-      if (_pointers.length < 2) _endTransform();
+    final wasTransforming = _transforming;
+    if (wasTransforming && _pointers.length < 2) _endTransform();
+    // 只有所有手指都离开时才判定双指双击：中途抬手属于变换收尾，不算轻点。
+    if (_pointers.isEmpty) _settleTouchGesture();
+
+    if (wasTransforming) {
       return; // 变换结束时残余的指针不再落笔，避免误画
     }
 
@@ -432,6 +476,12 @@ class _CanvasScreenState extends State<CanvasScreen>
   void _onPointerCancel(PointerCancelEvent e) {
     _pointers.remove(e.pointer);
     if (_transforming && _pointers.length < 2) _endTransform();
+
+    // 手势被系统打断：本次多指操作不算数，也不该成为后续双击的前半程。
+    if (_pointers.isEmpty) {
+      _multiTouchStartMs = 0;
+      _lastTwoFingerTapMs = 0;
+    }
 
     // 手势被系统打断（来电、返回手势等）时丢弃这一笔的半成品。
     if (e.pointer != _activePointer) return;
@@ -472,20 +522,55 @@ class _CanvasScreenState extends State<CanvasScreen>
         math.atan2(currentVector.dy, currentVector.dx) -
             math.atan2(startVector.dy, startVector.dx);
 
-    setState(() {
-      _viewport = _gestureStartViewport.applyGesture(
-        startCentroid: _gestureStartCentroid,
-        currentCentroid: (a + b) / 2,
-        scaleFactor: scaleFactor,
-        rotationDelta: rotationDelta,
-        docRect: _documentRect,
-      );
-    });
+    final next = _gestureStartViewport.applyGesture(
+      startCentroid: _gestureStartCentroid,
+      currentCentroid: (a + b) / 2,
+      scaleFactor: scaleFactor,
+      rotationDelta: rotationDelta,
+      docRect: _documentRect,
+    );
+
+    // 视口真的变了就算「变换」，本次多指操作不再有资格被判定为轻点。
+    if (!_multiTouchTransformed &&
+        ((next.scale - _gestureStartViewport.scale).abs() >
+                _twoFingerTapScaleTolerance ||
+            (next.rotation - _gestureStartViewport.rotation).abs() >
+                _twoFingerTapRotationTolerance ||
+            (next.offset - _gestureStartViewport.offset).distance >
+                _twoFingerTapTolerance)) {
+      _multiTouchTransformed = true;
+    }
+
+    setState(() => _viewport = next);
   }
 
   void _endTransform() {
     _transforming = false;
     setState(() {});
+  }
+
+  /// 所有手指离开后判定「双指双击」：两次干净的双指轻点 = 撤销。
+  ///
+  /// 之所以不用 `GestureDetector.onDoubleTap`：画布用原始 `Listener` 维护指针
+  /// 状态机（见 ADR-011），把双击交给手势竞技场会和绘制抢事件，反而更容易误判。
+  /// 在状态机内部判定，还能顺手排除「缩放结束后误撤销」这种情况。
+  void _settleTouchGesture() {
+    final now = DateTime.now().millisecondsSinceEpoch;
+    final startedAt = _multiTouchStartMs;
+    _multiTouchStartMs = 0;
+
+    final isTwoFingerTap = startedAt != 0 &&
+        !_multiTouchTransformed &&
+        now - startedAt <= _twoFingerTapMaxHold.inMilliseconds;
+    if (!isTwoFingerTap) {
+      _lastTwoFingerTapMs = 0;
+      return;
+    }
+
+    final isSecondTap = _lastTwoFingerTapMs != 0 &&
+        now - _lastTwoFingerTapMs <= _twoFingerDoubleTapWindow.inMilliseconds;
+    _lastTwoFingerTapMs = isSecondTap ? 0 : now;
+    if (isSecondTap) _undo();
   }
 
   /// 恢复「适配画布」。
@@ -526,6 +611,17 @@ class _CanvasScreenState extends State<CanvasScreen>
     if (_engine.redo()) _onDocumentChanged();
   }
 
+  /// 画板内的短暂提示。
+  ///
+  /// 默认只停留 1 秒：画布上的提示只承担「确认操作已生效」，久留会遮住画面底部，
+  /// 而且退出前还得看着它慢慢消失。需要让人读较长内容（例如导出路径）时，
+  /// 调用方显式传入更长的时长。
+  void _showHint(String message, {Duration duration = const Duration(seconds: 1)}) {
+    _messengerKey.currentState
+      ?..hideCurrentSnackBar()
+      ..showSnackBar(SnackBar(content: Text(message), duration: duration));
+  }
+
   /// 打开导出页面。
   ///
   /// 传入的是引擎图层列表的**只读视图而非拷贝**：导出页是独立路由，期间画板
@@ -543,19 +639,20 @@ class _CanvasScreenState extends State<CanvasScreen>
       ),
     );
     if (result == null || !mounted) return;
-    _messengerKey.currentState
-      ?..hideCurrentSnackBar()
-      ..showSnackBar(
-        SnackBar(content: Text('已导出 ${result.file.uri.pathSegments.last}')),
-      );
+    // 导出后不再分享，因此必须把「文件在哪」讲清楚：路径比文件名更有用。
+    _showHint(
+      '已导出到 ${result.file.parent.path}',
+      duration: const Duration(seconds: 3),
+    );
   }
 
   /// 打开图层面板。
   ///
   /// 面板直接改引擎状态，因此这里在每次变更后重绘并触发保存；
   /// 面板关闭后再刷一次，确保缩略图与列表状态一致。
+  /// 面板返回 `true` 表示刚刚清空过当前图层——清空会关闭面板，提示由画板弹出。
   Future<void> _openLayers() async {
-    await showModalBottomSheet<void>(
+    final cleared = await showModalBottomSheet<bool>(
       context: context,
       isScrollControlled: true,
       showDragHandle: true,
@@ -570,21 +667,30 @@ class _CanvasScreenState extends State<CanvasScreen>
     if (!mounted) return;
     setState(() {});
     _scheduleSave();
+    if (cleared == true) _showHint('已清空当前图层');
   }
 
-  void _clear() {
-    if (!_engine.clear()) return;
-    _onDocumentChanged();
-    // 清空可撤销，因此不做二次确认弹窗，只给一次可感知的提示。
-    // 提示交给画板私有 messenger，退出画布时随之销毁。
-    _messengerKey.currentState
-      ?..hideCurrentSnackBar()
-      ..showSnackBar(
-        SnackBar(
-          content: const Text('已清空当前图层'),
-          action: SnackBarAction(label: '撤销', onPressed: _undo),
-        ),
-      );
+  // ---- 工具栏拖动 ----
+
+  /// 把手指位移换算成归一化锚点增量。
+  ///
+  /// 位移按「可用区域」而非「面板可移动的剩余空间」归一化，因此面板会以略小的
+  /// 幅度跟随手指（约差一个面板宽）。这点偏差换来的是不需要在拖动中测量面板
+  /// 尺寸，而面板块数变化时也不用同步维护一份尺寸计算。
+  void _onToolbarDrag(DragUpdateDetails details) {
+    final area = _toolbarDragArea;
+    if (area.width <= 0 || area.height <= 0) return;
+    final next = Offset(
+      (_toolbarAnchor.dx + details.delta.dx / area.width).clamp(0.0, 1.0),
+      (_toolbarAnchor.dy + details.delta.dy / area.height).clamp(0.0, 1.0),
+    );
+    if (next == _toolbarAnchor) return;
+    setState(() => _toolbarAnchor = next);
+  }
+
+  /// 松手后记住位置，下次进入画板时沿用。
+  void _onToolbarDragEnd() {
+    unawaited(AppSettings.setToolbarAnchor(_toolbarAnchor));
   }
 
   // ---- 构建 ----
@@ -621,29 +727,17 @@ class _CanvasScreenState extends State<CanvasScreen>
             PopupMenuButton<String>(
               tooltip: '更多',
               onSelected: (action) {
-                switch (action) {
-                  case 'export':
-                    unawaited(_openExport());
-                  case 'clear':
-                    _clear();
-                }
+                if (action == 'export') unawaited(_openExport());
               },
               itemBuilder: (context) => <PopupMenuEntry<String>>[
+                // 「清空当前图层」已移入图层面板（那儿能看到当前层是谁，
+                // 清空前也有二次确认）。这里只保留导出。
                 const PopupMenuItem<String>(
                   value: 'export',
                   child: ListTile(
                     contentPadding: EdgeInsets.zero,
                     leading: Icon(Icons.ios_share, size: 20),
                     title: Text('导出'),
-                  ),
-                ),
-                PopupMenuItem<String>(
-                  value: 'clear',
-                  enabled: _engine.activeLayer.strokes.isNotEmpty,
-                  child: const ListTile(
-                    contentPadding: EdgeInsets.zero,
-                    leading: Icon(Icons.delete_outline, size: 20),
-                    title: Text('清空当前图层'),
                   ),
                 ),
               ],
@@ -718,23 +812,40 @@ class _CanvasScreenState extends State<CanvasScreen>
     );
   }
 
-  /// 工具面板：贴左缘、竖向排列、全部区块均为两列。
+  /// 工具面板：默认贴左缘、垂直居中，可拖动并记住位置。
   ///
   /// 尺寸随屏幕短边自适应（见 [_ToolbarMetrics]），但始终是覆盖层——
-  /// 面板变宽或变窄都不会改变下方文档的矩形。
+  /// 面板变宽、变窄或被拖到别处都不会改变下方文档的矩形。
+  ///
+  /// 定位用 `Align` + `FractionalOffset` 而不是 `Positioned`：`Align` 只会在
+  /// 父级范围内摆放子级，锚点又被夹在 `0~1`，因此面板永远不可能被拖出屏幕，
+  /// 也不需要测量面板尺寸。
   Widget _buildBrushPanel() {
     final metrics = _ToolbarMetrics.fromScreen(MediaQuery.sizeOf(context));
-    return Positioned(
-      top: 0,
-      bottom: 0,
-      left: metrics.margin,
-      child: Center(
-        child: _BrushPanel(
-          metrics: metrics,
-          selectedTool: _tool,
-          onSelectTool: _selectTool,
-          onLongPressTool: _openToolSettings,
-        ),
+    return Positioned.fill(
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          // 记下「扣除外边距后的可用区域」，拖动时用它把像素位移换算成归一化增量。
+          // 这是构建期派生值，不触发重建。
+          _toolbarDragArea = Size(
+            math.max(0, constraints.maxWidth - metrics.margin * 2),
+            math.max(0, constraints.maxHeight - metrics.margin * 2),
+          );
+          return Padding(
+            padding: EdgeInsets.all(metrics.margin),
+            child: Align(
+              alignment: FractionalOffset(_toolbarAnchor.dx, _toolbarAnchor.dy),
+              child: _BrushPanel(
+                metrics: metrics,
+                selectedTool: _tool,
+                onSelectTool: _selectTool,
+                onLongPressTool: _openToolSettings,
+                onDragToolbar: _onToolbarDrag,
+                onDragToolbarEnd: _onToolbarDragEnd,
+              ),
+            ),
+          );
+        },
       ),
     );
   }
@@ -1019,22 +1130,26 @@ class _ToolbarMetrics {
   final double radius;
 }
 
-/// 悬浮工具面板：左侧竖向停靠，只承载「工具」这一层。
+/// 悬浮工具面板：默认左侧停靠，可拖动，只承载「工具」这一层。
 ///
-/// 颜色与粗细不再常驻——它们属于工具参数，长按工具图标后在该工具的设置面板里
-/// 调整。这样工具栏的长度只与工具数量相关，新增工具时不会越堆越长。
+/// 颜色、粗细与压感不再常驻——它们属于工具参数，长按工具图标（或再次点按
+/// 已选中的工具）后在该工具的设置面板里调整。这样工具栏的长度只与工具数量相关。
 class _BrushPanel extends StatelessWidget {
   const _BrushPanel({
     required this.metrics,
     required this.selectedTool,
     required this.onSelectTool,
     required this.onLongPressTool,
+    required this.onDragToolbar,
+    required this.onDragToolbarEnd,
   });
 
   final _ToolbarMetrics metrics;
   final ToolKind selectedTool;
   final ValueChanged<ToolKind> onSelectTool;
   final ValueChanged<ToolKind> onLongPressTool;
+  final ValueChanged<DragUpdateDetails> onDragToolbar;
+  final VoidCallback onDragToolbarEnd;
 
   static const int _columns = 2;
 
@@ -1043,6 +1158,10 @@ class _BrushPanel extends StatelessWidget {
     (kind: ToolKind.brush, icon: AppIcons.brush, label: '画笔'),
     (kind: ToolKind.eraser, icon: AppIcons.eraser, label: '橡皮'),
   ];
+
+  /// 网格宽度：`列数 × 格子 + 列间距`。拖动条取同一宽度，视觉上像一条把手。
+  double get _gridWidth =>
+      metrics.cell * _columns + metrics.gap * (_columns - 1);
 
   @override
   Widget build(BuildContext context) {
@@ -1057,6 +1176,13 @@ class _BrushPanel extends StatelessWidget {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
+            _ToolbarDragHandle(
+              metrics: metrics,
+              width: _gridWidth,
+              onDragUpdate: onDragToolbar,
+              onDragEnd: onDragToolbarEnd,
+            ),
+            SizedBox(height: metrics.gap * 0.7),
             _buildGrid(<Widget>[
               for (final tool in _tools)
                 _ToolCell(
@@ -1068,14 +1194,6 @@ class _BrushPanel extends StatelessWidget {
                   onLongPress: () => onLongPressTool(tool.kind),
                 ),
             ]),
-            SizedBox(height: metrics.gap * 0.6),
-            Text(
-              '长按设置',
-              style: theme.textTheme.labelSmall?.copyWith(
-                color: theme.colorScheme.onSurfaceVariant,
-                fontSize: 9,
-              ),
-            ),
           ],
         ),
       ),
@@ -1100,6 +1218,69 @@ class _BrushPanel extends StatelessWidget {
       rows.add(Row(mainAxisSize: MainAxisSize.min, children: children));
     }
     return Column(mainAxisSize: MainAxisSize.min, children: rows);
+  }
+}
+
+/// 工具栏顶部的拖动把手：一条「三个小点」的横条。
+///
+/// 之所以做成独立把手而不是「整块面板可拖」：面板上全是工具按钮，让它们同时
+/// 承担拖动必然误触；把手只有 20dp 高，牺牲的命中面积最小。
+///
+/// 拖动是**立即生效**的 pan，而不是长按后拖动——长按要等 500ms，拖动一个
+/// 悬浮面板时这种延迟会被当成「没反应」。
+class _ToolbarDragHandle extends StatelessWidget {
+  const _ToolbarDragHandle({
+    required this.metrics,
+    required this.width,
+    required this.onDragUpdate,
+    required this.onDragEnd,
+  });
+
+  final _ToolbarMetrics metrics;
+  final double width;
+  final ValueChanged<DragUpdateDetails> onDragUpdate;
+  final VoidCallback onDragEnd;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final height = (metrics.cell * 0.42).clamp(16.0, 24.0);
+    final dot = (metrics.cell * 0.075).clamp(2.5, 3.5);
+
+    return Semantics(
+      label: '拖动工具栏',
+      child: MouseRegion(
+        cursor: SystemMouseCursors.grab,
+        child: GestureDetector(
+          key: const Key('toolbar-drag-handle'),
+          behavior: HitTestBehavior.opaque,
+          onPanUpdate: onDragUpdate,
+          onPanEnd: (_) => onDragEnd(),
+          child: SizedBox(
+            width: width,
+            height: height,
+            child: Center(
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  for (var i = 0; i < 3; i++) ...[
+                    if (i > 0) SizedBox(width: dot * 1.8),
+                    Container(
+                      width: dot,
+                      height: dot,
+                      decoration: BoxDecoration(
+                        shape: BoxShape.circle,
+                        color: scheme.onSurfaceVariant.withValues(alpha: 0.5),
+                      ),
+                    ),
+                  ],
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
   }
 }
 

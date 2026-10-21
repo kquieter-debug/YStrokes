@@ -112,6 +112,27 @@ void main() {
     expect(resetButton(tester).onPressed, isNull, reason: '已回到适配状态');
   });
 
+  /// 打开图层面板读取首行摘要（形如「1 笔 · 100%」），随后关闭面板。
+  Future<String> layerSummary(WidgetTester tester) async {
+    await tester.tap(find.byTooltip('图层'));
+    await tester.pumpAndSettle();
+    final text =
+        tester.widgetList<Text>(find.textContaining('笔 ·')).first.data!;
+    await tester.tapAt(const Offset(20, 100));
+    await tester.pumpAndSettle();
+    return text;
+  }
+
+  /// 一次「双指轻点」：两指同时按下、不移动、同时抬起。
+  Future<void> twoFingerTap(WidgetTester tester) async {
+    final a = await tester.startGesture(const Offset(150, 300));
+    final b = await tester.startGesture(const Offset(260, 300));
+    await tester.pump();
+    await a.up();
+    await b.up();
+    await tester.pump();
+  }
+
   testWidgets('双指结束后不会误落笔', (tester) async {
     await pumpCanvas(tester);
 
@@ -125,17 +146,70 @@ void main() {
     await second.up();
     await tester.pump();
 
-    // 放弃画笔后，「清空当前图层」应保持禁用（当前图层没有笔画）。
-    // 该动作已收进「更多」菜单，因此先展开菜单再读菜单项的可用状态。
-    await tester.tap(find.byTooltip('更多'));
-    await tester.pumpAndSettle();
+    // 放弃画笔后当前图层不应有笔画。
+    expect(await layerSummary(tester), startsWith('0 笔'));
+  });
 
-    final clearItem = tester.widget<PopupMenuItem<String>>(
-      find.ancestor(
-        of: find.text('清空当前图层'),
-        matching: find.byType(PopupMenuItem<String>),
-      ),
+  testWidgets('双指双击撤销上一笔', (tester) async {
+    await pumpCanvas(tester);
+
+    final stroke = await tester.startGesture(const Offset(120, 320));
+    await stroke.moveTo(const Offset(180, 340));
+    await stroke.moveTo(const Offset(240, 320));
+    await stroke.up();
+    await tester.pump();
+
+    expect(await layerSummary(tester), startsWith('1 笔'));
+
+    await twoFingerTap(tester);
+    await twoFingerTap(tester);
+    await tester.pump(const Duration(seconds: 1));
+
+    expect(await layerSummary(tester), startsWith('0 笔'));
+  });
+
+  testWidgets('单次双指轻点不会撤销', (tester) async {
+    await pumpCanvas(tester);
+
+    final stroke = await tester.startGesture(const Offset(120, 320));
+    await stroke.moveTo(const Offset(200, 330));
+    await stroke.up();
+    await tester.pump();
+    expect(await layerSummary(tester), startsWith('1 笔'));
+
+    await twoFingerTap(tester);
+    await tester.pump(const Duration(seconds: 1));
+
+    expect(
+      await layerSummary(tester),
+      startsWith('1 笔'),
+      reason: '双击才撤销，单击只当作一次无操作的双指轻点',
     );
-    expect(clearItem.enabled, isFalse);
+  });
+
+  testWidgets('双指缩放后不会误判为双击撤销', (tester) async {
+    await pumpCanvas(tester);
+
+    final stroke = await tester.startGesture(const Offset(120, 320));
+    await stroke.moveTo(const Offset(200, 330));
+    await stroke.up();
+    await tester.pump();
+    expect(await layerSummary(tester), startsWith('1 笔'));
+
+    // 两次「双指张开」：视口变了，两次都不能算轻点。
+    for (var i = 0; i < 2; i++) {
+      final first = await tester.startGesture(const Offset(150, 300));
+      final second = await tester.startGesture(const Offset(250, 300));
+      await tester.pump();
+      await first.moveTo(const Offset(110, 300));
+      await second.moveTo(const Offset(290, 300));
+      await tester.pump();
+      await first.up();
+      await second.up();
+      await tester.pump();
+    }
+    await tester.pump(const Duration(seconds: 1));
+
+    expect(await layerSummary(tester), startsWith('1 笔'));
   });
 }

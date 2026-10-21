@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import '../models/layer.dart';
@@ -15,6 +17,8 @@ import '../services/drawing_engine.dart';
 /// - 拖拽默认**不**即时重绘画布（见 [AppSettings.liveLayerReorder]）：
 ///   拖动只更新列表占位，松手才提交顺序，避免逐帧重建合成结果。
 /// - 每行的「更多」菜单提供重命名、向下合并、删除。
+/// - 面板底部的「清空当前图层」需要二次确认；确认后清空并关闭面板，
+///   让画布结果与随之出现的提示都可见（返回值 `true` 通知画板弹提示）。
 class LayersSheet extends StatefulWidget {
   const LayersSheet({
     super.key,
@@ -181,6 +185,46 @@ class _LayersSheetState extends State<LayersSheet> {
     _mutate(() => _engine.mergeDown(layer.id));
   }
 
+  /// 清空当前图层：先二次确认，确认后清空并关闭面板。
+  ///
+  /// 清空本身可撤销（引擎里是一条 `_ClearLayerEdit`），但误触的代价是
+  /// 「以为自己删错了」的一整轮慌乱，因此仍然要求确认。
+  Future<void> _clearActiveLayer() async {
+    final layer = _engine.activeLayer;
+    if (layer.strokes.isEmpty) return;
+
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('清空图层'),
+        content: Text(
+          '将清空「${layer.name}」的 ${layer.strokes.length} 笔内容。\n'
+          '此操作可以通过撤销恢复。',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            key: const Key('layer-clear-confirm'),
+            onPressed: () => Navigator.of(dialogContext).pop(true),
+            child: const Text('清空'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+    if (!_engine.clear()) return;
+
+    widget.onChanged();
+    setState(() {});
+    // 关闭面板：清空后画布立刻可见，画板弹出的提示也不会被面板遮住。
+    // 用 maybePop 而不是 pop：面板被当作普通页面渲染时（例如测试里直接挂在
+    // home 上）没有可弹出的路由，pop 会抛异常。
+    unawaited(Navigator.of(context).maybePop(true));
+  }
+
   // ---- 构建 ----
 
   @override
@@ -276,6 +320,20 @@ class _LayersSheetState extends State<LayersSheet> {
                   },
                 ),
               ],
+            ),
+            const SizedBox(height: 4),
+            const Divider(height: 1),
+            Align(
+              alignment: Alignment.centerLeft,
+              child: TextButton.icon(
+                key: const Key('layer-clear'),
+                onPressed: active.strokes.isEmpty ? null : _clearActiveLayer,
+                style: TextButton.styleFrom(
+                  foregroundColor: theme.colorScheme.error,
+                ),
+                icon: const Icon(Icons.layers_clear_outlined, size: 18),
+                label: const Text('清空当前图层'),
+              ),
             ),
           ],
         ),
