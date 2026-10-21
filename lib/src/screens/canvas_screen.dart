@@ -13,13 +13,16 @@ import '../rust/api/stroke.dart' as rust;
 import '../rust/api/tools.dart';
 import '../services/canvas_geometry.dart';
 import '../services/canvas_viewport.dart';
+import '../services/document_painter.dart';
 import '../services/document_store.dart';
 import '../services/drawing_engine.dart';
+import '../services/exporter.dart';
 import '../services/project_store.dart';
 import '../services/stroke_smoother.dart';
 import '../widgets/app_icon.dart';
 import '../widgets/layers_sheet.dart';
 import '../widgets/tool_settings_sheet.dart';
+import 'export_screen.dart';
 
 /// 工程画板。
 ///
@@ -287,7 +290,7 @@ class _CanvasScreenState extends State<CanvasScreen>
 
     final recorder = ui.PictureRecorder();
     final canvas = Canvas(recorder);
-    _paintDocument(
+    paintDocument(
       canvas,
       rect,
       Color(document.backgroundArgb),
@@ -502,6 +505,27 @@ class _CanvasScreenState extends State<CanvasScreen>
     if (_engine.redo()) _onDocumentChanged();
   }
 
+  /// 打开导出页面。
+  ///
+  /// 导出使用图层快照：导出过程中即使后台有状态变化也不会影响结果。
+  Future<void> _openExport() async {
+    final result = await Navigator.of(context).push<ExportResult>(
+      MaterialPageRoute<ExportResult>(
+        builder: (_) => ExportScreen(
+          project: widget.project,
+          layers: _engine.layers,
+          activeLayerId: _engine.activeLayerId,
+        ),
+      ),
+    );
+    if (result == null || !mounted) return;
+    _messengerKey.currentState
+      ?..hideCurrentSnackBar()
+      ..showSnackBar(
+        SnackBar(content: Text('已导出 ${result.file.uri.pathSegments.last}')),
+      );
+  }
+
   /// 打开图层面板。
   ///
   /// 面板直接改引擎状态，因此这里在每次变更后重绘并触发保存；
@@ -570,11 +594,35 @@ class _CanvasScreenState extends State<CanvasScreen>
               tooltip: '重做',
               icon: const Icon(Icons.redo),
             ),
-            IconButton(
-              onPressed:
-                  _engine.activeLayer.strokes.isEmpty ? null : _clear,
-              tooltip: '清空当前图层',
-              icon: const Icon(Icons.delete_outline),
+            PopupMenuButton<String>(
+              tooltip: '更多',
+              onSelected: (action) {
+                switch (action) {
+                  case 'export':
+                    unawaited(_openExport());
+                  case 'clear':
+                    _clear();
+                }
+              },
+              itemBuilder: (context) => <PopupMenuEntry<String>>[
+                const PopupMenuItem<String>(
+                  value: 'export',
+                  child: ListTile(
+                    contentPadding: EdgeInsets.zero,
+                    leading: Icon(Icons.ios_share, size: 20),
+                    title: Text('导出'),
+                  ),
+                ),
+                PopupMenuItem<String>(
+                  value: 'clear',
+                  enabled: _engine.activeLayer.strokes.isNotEmpty,
+                  child: const ListTile(
+                    contentPadding: EdgeInsets.zero,
+                    leading: Icon(Icons.delete_outline, size: 20),
+                    title: Text('清空当前图层'),
+                  ),
+                ),
+              ],
             ),
           ],
         ),
@@ -758,7 +806,7 @@ class _CanvasScreenState extends State<CanvasScreen>
     final recorder = ui.PictureRecorder();
     final canvas = Canvas(recorder);
     if (!rect.isEmpty) {
-      _paintDocument(
+      paintDocument(
         canvas,
         rect,
         Color(widget.project.document.backgroundArgb),
@@ -770,129 +818,6 @@ class _CanvasScreenState extends State<CanvasScreen>
     _pictureRevision = _engine.revision;
     _pictureRect = rect;
     return picture;
-  }
-}
-
-/// 把归一化笔画渲染到文档矩形内，采样点之间以二次贝塞尔平滑连接。
-///
-/// 直接 `lineTo` 会让快速运笔出现肉眼可见的折角；这里以相邻采样点的中值作为
-/// 曲线端点、原始点作为控制点，得到与笔迹走向贴合且切线连续的路径。
-void _paintStroke(
-  Canvas canvas,
-  Rect rect,
-  List<rust.StrokePoint> points,
-  int color,
-  double width, {
-  bool erase = false,
-}) {
-  if (points.isEmpty || rect.isEmpty) return;
-
-  Offset toOffset(rust.StrokePoint p) =>
-      Offset(rect.left + p.x * rect.width, rect.top + p.y * rect.height);
-
-  // 橡皮以「清空」方式合成：颜色无关紧要，混合模式才是关键。
-  // 调用方必须先把笔画放进独立图层，否则 clear 会连纸面一起擦掉。
-  final strokePaint = Paint()
-    ..color = Color(color)
-    ..style = PaintingStyle.stroke
-    ..strokeWidth = width
-    ..strokeCap = StrokeCap.round
-    ..strokeJoin = StrokeJoin.round
-    ..isAntiAlias = true;
-  if (erase) strokePaint.blendMode = BlendMode.clear;
-
-  if (points.length == 1) {
-    // 单点：轻点画布应留下一个圆点，而不是什么都没有。
-    final dotPaint = Paint()
-      ..color = Color(color)
-      ..isAntiAlias = true;
-    if (erase) dotPaint.blendMode = BlendMode.clear;
-    canvas.drawCircle(toOffset(points.first), width / 2, dotPaint);
-    return;
-  }
-
-  final path = Path();
-  final first = toOffset(points.first);
-  path.moveTo(first.dx, first.dy);
-
-  for (var i = 1; i < points.length - 1; i++) {
-    final current = toOffset(points[i]);
-    final next = toOffset(points[i + 1]);
-    final mid = Offset((current.dx + next.dx) / 2, (current.dy + next.dy) / 2);
-    path.quadraticBezierTo(current.dx, current.dy, mid.dx, mid.dy);
-  }
-
-  final last = toOffset(points.last);
-  path.lineTo(last.dx, last.dy);
-  canvas.drawPath(path, strokePaint);
-}
-
-/// 绘制整篇文档：纸面 + 各图层。
-///
-/// 每个图层单独 `saveLayer`，原因是它同时承担两件事：
-/// 1. 合成不透明度——整层乘一个 alpha；
-/// 2. 隔离橡皮的 `BlendMode.clear`——擦除只能作用于本层，若直接画在画布上
-///    会把下方纸面甚至其它图层一起擦穿。
-///
-/// [activeLayerId] 指定时，会把 [activePoints] 当作该图层末尾的一笔一起绘制，
-/// 这样橡皮的实时预览发生在图层内部，效果与提交后一致。
-void _paintDocument(
-  Canvas canvas,
-  Rect rect,
-  Color paperColor,
-  List<DrawingLayer> layers, {
-  String? activeLayerId,
-  List<rust.StrokePoint> activePoints = const <rust.StrokePoint>[],
-  int activeColor = 0xFF000000,
-  double activeWidth = 1,
-  bool activeErase = false,
-}) {
-  canvas.drawRect(rect, Paint()..color = paperColor);
-
-  for (final layer in layers) {
-    if (!layer.visible || layer.opacity <= 0) continue;
-
-    final isActive = layer.id == activeLayerId;
-    final hasActive = isActive && activePoints.isNotEmpty;
-    if (layer.strokes.isEmpty && !hasActive) continue;
-
-    // 需要离屏合成的三种情况：带不透明度、带混层模式、含擦除笔画
-    // （clear 必须限制在本层内）。三者都不成立时直接画，省一次 saveLayer。
-    final needsLayer = layer.opacity < 0.999 ||
-        !layer.blendMode.isNormal ||
-        activeErase && isActive ||
-        layer.strokes.any((stroke) => stroke.isEraser);
-    if (needsLayer) {
-      canvas.saveLayer(
-        rect,
-        Paint()
-          ..color = Colors.black.withValues(alpha: layer.opacity)
-          ..blendMode = layer.blendMode.blendMode,
-      );
-    }
-
-    for (final stroke in layer.strokes) {
-      _paintStroke(
-        canvas,
-        rect,
-        stroke.points,
-        stroke.color,
-        stroke.widthInPixels(rect.shortestSide),
-        erase: stroke.isEraser,
-      );
-    }
-    if (hasActive) {
-      _paintStroke(
-        canvas,
-        rect,
-        activePoints,
-        activeColor,
-        activeWidth,
-        erase: activeErase,
-      );
-    }
-
-    if (needsLayer) canvas.restore();
   }
 }
 
@@ -951,7 +876,7 @@ class _CanvasPainter extends CustomPainter {
 
   void _paintContent(Canvas canvas) {
     if (activeErase) {
-      _paintDocument(
+      paintDocument(
         canvas,
         rect,
         paperColor,
@@ -980,7 +905,7 @@ class _CanvasPainter extends CustomPainter {
           ..blendMode = activeBlend.blendMode,
       );
     }
-    _paintStroke(canvas, rect, activePoints, activeColor, activeWidth);
+    paintStrokePath(canvas, rect, activePoints, activeColor, activeWidth);
     if (needsLayer) canvas.restore();
   }
 

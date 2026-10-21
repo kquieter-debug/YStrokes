@@ -125,8 +125,17 @@ void main() {
     await second.up();
     await tester.pump();
 
-    // 放弃画笔后，清空按钮应保持禁用（当前图层没有笔画）。
-    final clear = buttonWithTooltip(tester, '清空当前图层');
-    expect(clear.onPressed, isNull);
+    // 放弃画笔后，「清空当前图层」应保持禁用（当前图层没有笔画）。
+    // 该动作已收进「更多」菜单，因此先展开菜单再读菜单项的可用状态。
+    await tester.tap(find.byTooltip('更多'));
+    await tester.pumpAndSettle();
+
+    final clearItem = tester.widget<PopupMenuItem<String>>(
+      find.ancestor(
+        of: find.text('清空当前图层'),
+        matching: find.byType(PopupMenuItem<String>),
+      ),
+    );
+    expect(clearItem.enabled, isFalse);
   });
 }

@@ -33,6 +33,13 @@ class DrawingLayer {
 
   bool get isEmpty => strokes.isEmpty;
 
+  /// 是否只包含矢量内容。
+  ///
+  /// 当前文档只有笔画，因此恒为 true。位图图层（导入图片、PSD 合成、
+  /// SVG 栅格化结果）落地后由图层类型决定；导出侧的「能否导出纯矢量 SVG」
+  /// 判定只依赖这个属性，届时无需改动导出逻辑。
+  bool get isVector => true;
+
   rust_doc.Layer toRust() => rust_doc.Layer(
         name: name,
         opacity: opacity,
