@@ -14,6 +14,7 @@
 - **矢量存储**：笔画以归一化坐标保存，与分辨率解耦，更换设备或导出时比例不变。
 - **画布规格**：新建时指定尺寸、分辨率与底色（内置 A4 / A5 / 手机 / 正方形等模板），参数随工程保存，不受设备影响。
 - **增量平滑**：平滑在采集阶段完成，抬手提交的点列与屏幕显示逐位相同——不闪烁、不形变。
+- **压感驱动笔宽**：压力经 gamma 映射为宽度（最细 25%），按点生成左右轮廓后一次填充；画布、缩略图、PNG 与 SVG 四处一致。画笔默认开启、橡皮默认关闭，可在工具设置里切换（与 Photoshop 的「模拟压力」一样，切换会影响已有笔画）。
 - **可靠落盘**：原子写入（临时文件 + 重命名），进程被系统回收也不会留下半截文档；文档损坏时按「部分恢复」处理。
 - **可撤销**：新增笔画、擦除与清空画布均可撤销。
 - **工具**：画笔与橡皮。橡皮以「擦除笔画」的形式记录，因此撤销天然成立，文档也不必保存位图。
@@ -42,9 +43,12 @@ ystrokes/
 │     │                      # DocumentSpec / CanvasPreset / ToolSettings
 │     ├─ screens/            # welcome / home / canvas / new_document
 │     │                      # sections：工程区 / 设置 / 关于
-│     ├─ services/           # StrokeSmoother / DrawingEngine / canvas_geometry
-│     │                      # canvas_viewport / DocumentStore / ProjectStore
-│     │                      # SettingsService / AppTheme
+│     ├─ models/             # DrawingProject / Stroke / DrawingLayer / DocumentSpec
+│     │                      # CanvasPreset / ToolSettings / StrokeRenderOptions
+│     ├─ services/           # StrokeSmoother / DrawingEngine / stroke_outline
+│     │                      # canvas_geometry / canvas_viewport / document_painter
+│     │                      # DocumentStore / ProjectStore / DocumentExporter
+│     │                      # SvgExporter / SettingsService / AppTheme
 │     ├─ widgets/            # ProjectTile / AppIcon / SectionCard
 │     │                      # HsvColorPicker / ToolSettingsSheet / LayersSheet
 │     └─ rust/               # FRB 生成代码（勿手改）
@@ -52,13 +56,16 @@ ystrokes/
 │  ├─ Cargo.toml
 │  └─ src/
 │     ├─ lib.rs
-│     ├─ api/mod.rs          # 对外 API + 文档编解码
-│     └─ frb_generated.rs    # 生成代码（勿手改）
+│     └─ api/
+│        ├─ mod.rs           # 对外 API 入口（ping / rust_version）
+│        ├─ stroke.rs        # 笔画模型 + 批量几何
+│        ├─ document.rs      # 文档 v4 编解码 + 混合模式
+│        └─ tools/           # 画笔 / 橡皮，每工具一个子模块
 ├─ rust_builder/             # cargokit：Rust → Android .so
 ├─ android/                  # Android 工程
 ├─ assets/                   # 应用图标
 │  └─ icons/                 # 界面 SVG 图标（替换文件即可换图）
-├─ test/                     # 单元与 widget 测试
+├─ test/                     # 单元与 widget 测试（18 个文件）
 ├─ windows/                  # Windows 工程（仅用于快速验证渲染，非交付目标）
 ├─ flutter_rust_bridge.yaml  # codegen 配置
 └─ pubspec.yaml

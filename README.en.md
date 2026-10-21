@@ -14,6 +14,7 @@ A vector-stroke drawing app for Android, built around how a stroke actually feel
 - **Vector storage**: strokes are stored in normalized coordinates, decoupled from resolution, so proportions survive device changes and export.
 - **Document setup**: pick a size, resolution, and background when creating a document (A4 / A5 / phone / square presets included); the spec is saved with the project and never changes with the device.
 - **Incremental smoothing**: smoothing happens as samples arrive. The point list committed on pen-up is bit-for-bit what was on screen — no flicker, no shape shift.
+- **Pressure-driven width**: pressure maps to width through a gamma curve (down to 25%), rendered as a per-point outline filled in one path. Canvas, thumbnails, PNG and SVG all agree. On by default for the brush, off for the eraser, toggleable per tool — and, like Photoshop's pressure simulation, toggling it re-renders existing strokes.
 - **Durable writes**: atomic write (temp file + rename) means a process kill never leaves a truncated document; damaged documents recover partially instead of failing outright.
 - **Undoable**: adding strokes, erasing, and clearing the canvas can all be undone.
 - **Tools**: brush and eraser. Erasing is recorded as a stroke, so undo comes for free and the document never has to store a bitmap.
@@ -38,13 +39,14 @@ ystrokes/
 │  ├─ main.dart              # Entry point: initializes FRB
 │  └─ src/
 │     ├─ app.dart            # Root widget and theme
-│     ├─ models/             # DrawingProject / Stroke / DrawingLayer
-│     │                      # DocumentSpec / CanvasPreset / ToolSettings
+│     ├─ models/             # DrawingProject / Stroke / DrawingLayer / DocumentSpec
+│     │                      # CanvasPreset / ToolSettings / StrokeRenderOptions
 │     ├─ screens/            # welcome / home / canvas / new_document
 │     │                      # sections: projects / settings / about
-│     ├─ services/           # StrokeSmoother / DrawingEngine / canvas_geometry
-│     │                      # canvas_viewport / DocumentStore / ProjectStore
-│     │                      # SettingsService / AppTheme
+│     ├─ services/           # StrokeSmoother / DrawingEngine / stroke_outline
+│     │                      # canvas_geometry / canvas_viewport / document_painter
+│     │                      # DocumentStore / ProjectStore / DocumentExporter
+│     │                      # SvgExporter / SettingsService / AppTheme
 │     ├─ widgets/            # ProjectTile / AppIcon / SectionCard
 │     │                      # HsvColorPicker / ToolSettingsSheet / LayersSheet
 │     └─ rust/               # FRB generated code (do not edit)
@@ -52,13 +54,16 @@ ystrokes/
 │  ├─ Cargo.toml
 │  └─ src/
 │     ├─ lib.rs
-│     ├─ api/mod.rs          # Public API + document codec
-│     └─ frb_generated.rs    # Generated code (do not edit)
+│     └─ api/
+│        ├─ mod.rs           # Public API entry (ping / rust_version)
+│        ├─ stroke.rs        # Stroke model + batch geometry
+│        ├─ document.rs      # Document v4 codec + blend modes
+│        └─ tools/           # Brush / eraser, one submodule per tool
 ├─ rust_builder/             # cargokit: Rust → Android .so
 ├─ android/                  # Android project
 ├─ assets/                   # App icons
 │  └─ icons/                 # UI SVG icons (swap the files to re-skin)
-├─ test/                     # Unit and widget tests
+├─ test/                     # Unit and widget tests (18 files)
 ├─ windows/                  # Windows project (rendering checks only, not a target)
 ├─ flutter_rust_bridge.yaml  # codegen configuration
 └─ pubspec.yaml
