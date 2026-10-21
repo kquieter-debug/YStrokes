@@ -1,6 +1,15 @@
 import '../rust/api/stroke.dart' as rust;
 import '../rust/api/tools.dart';
 
+/// 归一化笔宽 → 像素笔宽的**唯一换算入口**。
+///
+/// 画布预览、已提交笔画、缩略图与导出的基准宽度都必须经过这里，否则会出现
+/// 「绘制中一种粗细、提交后另一种粗细」——这类偏差只在极细笔画上可见，
+/// 排查成本极高。下限 1px 针对的是**输出空间**的像素：屏幕上是逻辑像素，
+/// SVG 中是文档像素。
+double strokeWidthPx(double widthRatio, double shortestSide) =>
+    (widthRatio * shortestSide).clamp(1.0, double.infinity);
+
 /// 一条完整笔画：由若干归一化采样点组成。
 ///
 /// 采样点坐标使用归一化坐标（0.0 ~ 1.0），渲染时再乘以画布尺寸还原，
@@ -40,7 +49,7 @@ class Stroke {
 
   /// 换算为当前画布下的像素笔宽，并保证至少 1 像素可见。
   double widthInPixels(double shortestSide) =>
-      (widthRatio * shortestSide).clamp(1.0, double.infinity);
+      strokeWidthPx(widthRatio, shortestSide);
 
   /// 转换为 FFI 层结构，供持久化编码使用。
   rust.Stroke toRust() => rust.Stroke(
