@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import '../models/layer.dart';
@@ -53,8 +55,9 @@ class LayersPanel extends StatefulWidget {
   /// 新建位图图层。尺寸来自文档，只有画板知道，因此由画板执行。
   final VoidCallback onAddRaster;
 
-  /// 栅格化指定图层（矢量 → 像素）。渲染是异步的，由画板执行。
-  final ValueChanged<String> onRasterize;
+  /// 栅格化指定图层（矢量 → 像素）。渲染是异步的，由画板执行；
+  /// 返回的 Future 完成后面板才刷新行摘要——否则会一直显示「N 笔」。
+  final Future<void> Function(String layerId) onRasterize;
 
   @override
   State<LayersPanel> createState() => _LayersPanelState();
@@ -213,6 +216,13 @@ class _LayersPanelState extends State<LayersPanel> {
     }
 
     _mutate(() => _engine.mergeDown(layer.id));
+  }
+
+  /// 栅格化并等待完成：编码是异步的，完成之后必须再刷一次列表，
+  /// 否则这一行会继续显示「N 笔 · …」，看起来像什么都没发生。
+  Future<void> _rasterize(DrawingLayer layer) async {
+    await widget.onRasterize(layer.id);
+    if (mounted) setState(() {});
   }
 
   /// 清空当前图层：先二次确认，确认后清空并关闭气泡。
@@ -569,8 +579,7 @@ class _LayersPanelState extends State<LayersPanel> {
                         case 'flip-v':
                           widget.onFlip(layer.id, false);
                         case 'rasterize':
-                          widget.onRasterize(layer.id);
-                          setState(() {});
+                          unawaited(_rasterize(layer));
                         case 'merge':
                           _mergeDown(layer);
                         case 'delete':

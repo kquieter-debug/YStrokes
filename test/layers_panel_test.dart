@@ -45,7 +45,7 @@ void main() {
             onTransform: (_) {},
             onFlip: (_, _) {},
             onAddRaster: () {},
-            onRasterize: (_) {},
+            onRasterize: (_) async {},
           ),
         ),
       ),

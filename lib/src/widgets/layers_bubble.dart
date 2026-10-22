@@ -49,7 +49,7 @@ class LayersBubble extends StatelessWidget {
   final VoidCallback onAddRaster;
 
   /// 栅格化指定图层（异步渲染，由画板执行）。
-  final ValueChanged<String> onRasterize;
+  final Future<void> Function(String layerId) onRasterize;
 
   final VoidCallback onClose;
 

@@ -1086,9 +1086,7 @@ class _CanvasScreenState extends State<CanvasScreen>
           unawaited(_journal.clear(widget.project.id));
           _scheduleSave();
         },
-        onRasterize: (layerId) {
-          unawaited(_rasterizeLayer(layerId));
-        },
+        onRasterize: _rasterizeLayer,
         onTransform: (layerId) {
           Navigator.of(dialogContext).pop();
           // 气泡关闭后下一帧再进入变换态：此时画布已完成布局，
