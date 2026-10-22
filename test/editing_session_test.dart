@@ -261,4 +261,104 @@ void main() {
     expect(engine.layers, hasLength(1));
     expect(engine.layers.single, isA<DrawingLayer>());
   });
+
+  group('翻转图层', () {
+    test('水平翻转把坐标镜像到对侧，可撤销', () {
+      final engine = DrawingEngine();
+      engine.addStroke(
+        <rust.StrokePoint>[
+          rust.StrokePoint(x: 0.2, y: 0.3, pressure: 1, timestampMs: 0),
+        ],
+        tool: ToolKind.brush,
+        color: 0xFF000000,
+        widthRatio: 0.01,
+        usesPressure: false,
+      );
+
+      expect(engine.flipLayer(engine.activeLayerId, horizontal: true), isTrue);
+      final flipped = engine.layers.single.strokes.single.points.single;
+      expect(flipped.x, closeTo(0.8, 1e-6));
+      expect(flipped.y, closeTo(0.3, 1e-6));
+
+      expect(engine.undo(), isTrue);
+      expect(
+        engine.layers.single.strokes.single.points.single.x,
+        closeTo(0.2, 1e-6),
+      );
+    });
+
+    test('空图层翻转返回 false，不产生撤销记录', () {
+      final engine = DrawingEngine();
+      expect(engine.flipLayer(engine.activeLayerId, horizontal: true), isFalse);
+      expect(engine.canUndo, isFalse);
+    });
+  });
+
+  group('切分笔画', () {
+    test('跨边界的笔画被替换成多段，且各自有新 id', () {
+      final engine = DrawingEngine();
+      engine.addStroke(
+        <rust.StrokePoint>[
+          rust.StrokePoint(x: 0.1, y: 0.5, pressure: 1, timestampMs: 0),
+          rust.StrokePoint(x: 0.9, y: 0.5, pressure: 1, timestampMs: 10),
+        ],
+        tool: ToolKind.brush,
+        color: 0xFF00FF00,
+        widthRatio: 0.01,
+        usesPressure: false,
+      );
+      final originalId = engine.layers.single.strokes.single.id;
+
+      final square = <Offset>[
+        const Offset(0.3, 0.3),
+        const Offset(0.7, 0.3),
+        const Offset(0.7, 0.7),
+        const Offset(0.3, 0.7),
+      ];
+      final created = engine.splitStrokes(
+        engine.activeLayerId,
+        <int>{originalId},
+        square,
+      );
+
+      expect(created, greaterThanOrEqualTo(1));
+      expect(engine.layers.single.strokes, hasLength(1), reason: '切一次仍是一段');
+      final cut = engine.layers.single.strokes.single;
+      expect(cut.id, isNot(originalId), reason: '碎片是独立对象');
+      expect(cut.color, 0xFF00FF00, reason: '样式沿用原笔画');
+      expect(cut.points.first.x, closeTo(0.3, 1e-6));
+
+      expect(engine.undo(), isTrue);
+      expect(engine.layers.single.strokes.single.id, originalId);
+    });
+
+    test('整条在区域内时不切分，返回 0', () {
+      final engine = DrawingEngine();
+      engine.addStroke(
+        <rust.StrokePoint>[
+          rust.StrokePoint(x: 0.4, y: 0.4, pressure: 1, timestampMs: 0),
+          rust.StrokePoint(x: 0.6, y: 0.6, pressure: 1, timestampMs: 10),
+        ],
+        tool: ToolKind.brush,
+        color: 0xFF000000,
+        widthRatio: 0.01,
+        usesPressure: false,
+      );
+      final id = engine.layers.single.strokes.single.id;
+
+      final created = engine.splitStrokes(
+        engine.activeLayerId,
+        <int>{id},
+        <Offset>[
+          const Offset(0.3, 0.3),
+          const Offset(0.7, 0.3),
+          const Offset(0.7, 0.7),
+          const Offset(0.3, 0.7),
+        ],
+      );
+
+      expect(created, 0);
+      expect(engine.canUndo, isTrue, reason: '只有最初那一笔');
+    });
+  });
 }

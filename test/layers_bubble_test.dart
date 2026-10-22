@@ -56,6 +56,7 @@ void main() {
             onChanged: () {},
             onCleared: onCleared ?? () {},
             onTransform: onTransform ?? (_) {},
+            onFlip: (_, _) {},
             onClose: onClose ?? () {},
           ),
         ),

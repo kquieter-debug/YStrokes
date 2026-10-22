@@ -1,10 +1,12 @@
 import 'dart:math' as math;
+import 'dart:ui' show Offset;
 
 import '../models/layer.dart';
 import '../rust/api/document.dart' show LayerBlendMode;
 import '../models/stroke.dart';
 import '../rust/api/stroke.dart' as rust;
 import '../rust/api/tools.dart';
+import 'transform_geometry.dart';
 
 /// 画板引擎：管理图层、笔画与撤销/重做栈。
 ///
@@ -346,6 +348,104 @@ class DrawingEngine {
       _revision++;
     }
     return added;
+  }
+
+  /// 翻转整层内容（围绕纸面中心）。
+  ///
+  /// 直接烘焙进点坐标，而不是给图层加一层矩阵：矢量文档里的 SVG 导出与
+  /// 命中测试都按「坐标即真相」工作，多一层矩阵会让这两处都要学会换算。
+  bool flipLayer(String layerId, {required bool horizontal}) {
+    final layer = _layerById(layerId);
+    if (layer == null || layer.strokes.isEmpty) return false;
+
+    final before = List<Stroke>.of(layer.strokes);
+    final after = transformStrokes(
+      before,
+      StrokeTransform(flipX: horizontal, flipY: !horizontal),
+      const Offset(0.5, 0.5),
+    );
+    layer.strokes
+      ..clear()
+      ..addAll(after);
+    _pushEdit(_ReplaceStrokesEdit(layerId, before, after));
+    _revision++;
+    return true;
+  }
+
+  /// 把指定笔画按选区边界切开，返回切出来的段数；0 表示没有任何改动。
+  ///
+  /// 只处理**跨边界**的笔画：完全在内部的不动（本来就是整条选中），
+  /// 完全在外部的也不会出现在 [ids] 里。切出来的碎片沿用原笔画的颜色、
+  /// 工具与压感标记，但各自分配新 id——它们已经是独立对象，
+  /// 共享 id 会让「删掉其中一段」误伤其余段。
+  ///
+  /// 判定「是否真的切了」不能只看段数：一条横穿选区的笔画裁掉两头之后
+  /// 仍然只有一段，但它确实被改写了。这里比较切分结果与原始点列是否
+  /// **逐点同一对象**——只有完全没被触碰的点列才会保持同一批实例。
+  int splitStrokes(
+    String layerId,
+    Set<int> ids,
+    List<Offset> polygon,
+  ) {
+    final layer = _layerById(layerId);
+    if (layer == null || ids.isEmpty || polygon.length < 3) return 0;
+
+    final before = List<Stroke>.of(layer.strokes);
+    final next = <Stroke>[];
+    var pieces = 0;
+    var changed = false;
+
+    for (final stroke in before) {
+      if (!ids.contains(stroke.id)) {
+        next.add(stroke);
+        continue;
+      }
+
+      final fragments = splitPolylineAtPolygon(stroke.points, polygon);
+      if (_samePolyline(fragments, stroke.points)) {
+        next.add(stroke);
+        continue;
+      }
+
+      changed = true;
+      for (final points in fragments) {
+        if (points.isEmpty) continue;
+        next.add(
+          Stroke(
+            id: _nextStrokeId++,
+            tool: stroke.tool,
+            color: stroke.color,
+            widthRatio: stroke.widthRatio,
+            points: points,
+            usesPressure: stroke.usesPressure,
+          ),
+        );
+        pieces++;
+      }
+    }
+
+    if (!changed || pieces == 0) return 0;
+
+    layer.strokes
+      ..clear()
+      ..addAll(next);
+    _pushEdit(_ReplaceStrokesEdit(layerId, before, next));
+    _revision++;
+    return pieces;
+  }
+
+  /// 切分结果是否就是原始点列（未被触碰）。
+  static bool _samePolyline(
+    List<List<rust.StrokePoint>> fragments,
+    List<rust.StrokePoint> original,
+  ) {
+    if (fragments.length != 1) return false;
+    final only = fragments.single;
+    if (only.length != original.length) return false;
+    for (var i = 0; i < original.length; i++) {
+      if (!identical(only[i], original[i])) return false;
+    }
+    return true;
   }
 
   // ---- 撤销 / 重做 ----

@@ -28,6 +28,7 @@ class LayersPanel extends StatefulWidget {
     required this.onClose,
     required this.onCleared,
     required this.onTransform,
+    required this.onFlip,
   });
 
   final DrawingEngine engine;
@@ -43,6 +44,9 @@ class LayersPanel extends StatefulWidget {
 
   /// 请求对该图层做整体变换；画板负责关气泡并进入变换态。
   final ValueChanged<String> onTransform;
+
+  /// 翻转整层：`(layerId, 是否水平)`。与变换不同，它一步到位，不进交互模式。
+  final void Function(String layerId, bool horizontal) onFlip;
 
   @override
   State<LayersPanel> createState() => _LayersPanelState();
@@ -521,6 +525,10 @@ class _LayersPanelState extends State<LayersPanel> {
                           _mutate(() => _engine.duplicateLayer(layer.id));
                         case 'transform':
                           widget.onTransform(layer.id);
+                        case 'flip-h':
+                          widget.onFlip(layer.id, true);
+                        case 'flip-v':
+                          widget.onFlip(layer.id, false);
                         case 'merge':
                           _mergeDown(layer);
                         case 'delete':
@@ -541,6 +549,16 @@ class _LayersPanelState extends State<LayersPanel> {
                         // 空图层没有可变换的内容，置灰比让他点一下才知道更省事。
                         enabled: layer.strokes.isNotEmpty,
                         child: const Text('变换图层'),
+                      ),
+                      PopupMenuItem<String>(
+                        value: 'flip-h',
+                        enabled: layer.strokes.isNotEmpty,
+                        child: const Text('水平翻转'),
+                      ),
+                      PopupMenuItem<String>(
+                        value: 'flip-v',
+                        enabled: layer.strokes.isNotEmpty,
+                        child: const Text('垂直翻转'),
                       ),
                       PopupMenuItem<String>(
                         value: 'merge',

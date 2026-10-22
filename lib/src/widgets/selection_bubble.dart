@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../models/canvas_tool.dart';
 import 'bubble_surface.dart';
 
 /// 选区工具的气泡。
@@ -15,6 +16,10 @@ class SelectionBubble extends StatelessWidget {
     required this.anchor,
     required this.selectedCount,
     required this.hasSession,
+    required this.mode,
+    required this.onModeChanged,
+    required this.onInvert,
+    required this.onSplit,
     required this.onDelete,
     required this.onClear,
     required this.onClose,
@@ -29,6 +34,16 @@ class SelectionBubble extends StatelessWidget {
 
   /// 是否存在可提交的变换（决定提示文案）。
   final bool hasSession;
+
+  /// 下次套索如何合并到已有选区。
+  final SelectionMode mode;
+  final ValueChanged<SelectionMode> onModeChanged;
+
+  /// 反向选择：取当前图层的补集。
+  final VoidCallback onInvert;
+
+  /// 切分到选区边界（破坏性，会产生新的笔画对象）。
+  final VoidCallback onSplit;
 
   final VoidCallback onDelete;
   final VoidCallback onClear;
@@ -100,6 +115,25 @@ class SelectionBubble extends StatelessWidget {
                       ],
                     ),
                     const SizedBox(height: 10),
+                    SegmentedButton<SelectionMode>(
+                      key: const Key('selection-mode'),
+                      showSelectedIcon: false,
+                      style: const ButtonStyle(
+                        visualDensity: VisualDensity.compact,
+                        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                      ),
+                      segments: <ButtonSegment<SelectionMode>>[
+                        for (final value in SelectionMode.values)
+                          ButtonSegment<SelectionMode>(
+                            value: value,
+                            label: Text(value.label),
+                          ),
+                      ],
+                      selected: <SelectionMode>{mode},
+                      onSelectionChanged: (values) =>
+                          onModeChanged(values.first),
+                    ),
+                    const SizedBox(height: 10),
                     Text(
                       selectedCount == 0
                           ? '在画面上拖出一个闭合区域，圈住要变换的笔画。'
@@ -111,7 +145,44 @@ class SelectionBubble extends StatelessWidget {
                         height: 1.45,
                       ),
                     ),
-                    const SizedBox(height: 10),
+                    const SizedBox(height: 8),
+                    // 用 Wrap 而不是 Row：窄屏（360dp）下三个中文标签的
+                    // TextButton 会超出气泡宽度，Wrap 让它们自然换行。
+                    Wrap(
+                      spacing: 4,
+                      runSpacing: 2,
+                      children: [
+                        TextButton(
+                          key: const Key('selection-invert'),
+                          onPressed: selectedCount == 0 ? null : onInvert,
+                          style: TextButton.styleFrom(
+                            visualDensity: VisualDensity.compact,
+                            padding: const EdgeInsets.symmetric(horizontal: 8),
+                          ),
+                          child: const Text('反向选择'),
+                        ),
+                        TextButton(
+                          key: const Key('selection-split'),
+                          onPressed: selectedCount == 0 ? null : onSplit,
+                          style: TextButton.styleFrom(
+                            visualDensity: VisualDensity.compact,
+                            padding: const EdgeInsets.symmetric(horizontal: 8),
+                          ),
+                          child: const Text('切分到选区'),
+                        ),
+                        TextButton(
+                          key: const Key('selection-clear'),
+                          onPressed: selectedCount == 0 && !hasSession
+                              ? null
+                              : onClear,
+                          style: TextButton.styleFrom(
+                            visualDensity: VisualDensity.compact,
+                            padding: const EdgeInsets.symmetric(horizontal: 8),
+                          ),
+                          child: const Text('取消选区'),
+                        ),
+                      ],
+                    ),
                     Row(
                       children: [
                         TextButton.icon(
@@ -125,12 +196,11 @@ class SelectionBubble extends StatelessWidget {
                           label: const Text('删除选中'),
                         ),
                         const Spacer(),
-                        TextButton(
-                          key: const Key('selection-clear'),
-                          onPressed: selectedCount == 0 && !hasSession
-                              ? null
-                              : onClear,
-                          child: const Text('取消选区'),
+                        Text(
+                          '整笔命中',
+                          style: theme.textTheme.labelSmall?.copyWith(
+                            color: theme.colorScheme.outline,
+                          ),
                         ),
                       ],
                     ),

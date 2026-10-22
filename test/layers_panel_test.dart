@@ -43,6 +43,7 @@ void main() {
             onClose: () {},
             onCleared: () {},
             onTransform: (_) {},
+            onFlip: (_, _) {},
           ),
         ),
       ),

@@ -21,6 +21,7 @@ class LayersBubble extends StatelessWidget {
     required this.onChanged,
     required this.onCleared,
     required this.onTransform,
+    required this.onFlip,
     required this.onClose,
     this.animation,
   });
@@ -38,6 +39,9 @@ class LayersBubble extends StatelessWidget {
 
   /// 请求对某图层做整体变换。
   final ValueChanged<String> onTransform;
+
+  /// 翻转整层：`(layerId, 是否水平)`。
+  final void Function(String layerId, bool horizontal) onFlip;
 
   final VoidCallback onClose;
 
@@ -89,6 +93,7 @@ class LayersBubble extends StatelessWidget {
                   onClose: onClose,
                   onCleared: onCleared,
                   onTransform: onTransform,
+                  onFlip: onFlip,
                 ),
               ),
             ),

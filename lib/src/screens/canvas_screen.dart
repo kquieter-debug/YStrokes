@@ -212,11 +212,17 @@ class _CanvasScreenState extends State<CanvasScreen>
   /// 正在画的套索（归一化坐标）；为空表示没在画。
   List<Offset>? _lassoPoints;
 
+  /// 本次套索开始前的选区（加选/减选的合并基数），按下时快照，抬手时消费。
+  Set<int> _lassoBaseIds = const <int>{};
+
   /// 已闭合的选区（归一化坐标），仅用于显示；命中集合在 [_session] 里。
   List<Offset>? _selectionPath;
 
   /// 变换会话；为空表示当前没有待提交的变换。
   TransformSession? _session;
+
+  /// 再次套索时如何与已有选区合并（新建 / 追加 / 减选）。
+  SelectionMode _selectionMode = SelectionMode.replace;
 
   /// 当前单指拖动的作用。
   TransformDragMode _dragMode = TransformDragMode.none;
@@ -818,6 +824,12 @@ class _CanvasScreenState extends State<CanvasScreen>
           _scheduleSave();
         },
         onCleared: () => _showHint('已清空当前图层'),
+        onFlip: (layerId, horizontal) {
+          if (!_engine.flipLayer(layerId, horizontal: horizontal)) return;
+          setState(() {});
+          unawaited(_journal.clear(widget.project.id));
+          _scheduleSave();
+        },
         onTransform: (layerId) {
           Navigator.of(dialogContext).pop();
           // 气泡关闭后下一帧再进入变换态：此时画布已完成布局，
@@ -963,6 +975,35 @@ class _CanvasScreenState extends State<CanvasScreen>
                     style: theme.textTheme.labelMedium?.copyWith(
                       color: theme.colorScheme.onSurfaceVariant,
                     ),
+                  ),
+                  Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      TextButton(
+                        key: const Key('transform-flip-h'),
+                        onPressed: () => _flipSelection(horizontal: true),
+                        style: TextButton.styleFrom(
+                          visualDensity: VisualDensity.compact,
+                        ),
+                        child: const Text('水平翻转'),
+                      ),
+                      TextButton(
+                        key: const Key('transform-flip-v'),
+                        onPressed: () => _flipSelection(horizontal: false),
+                        style: TextButton.styleFrom(
+                          visualDensity: VisualDensity.compact,
+                        ),
+                        child: const Text('垂直翻转'),
+                      ),
+                      TextButton(
+                        key: const Key('transform-values'),
+                        onPressed: _promptTransformValues,
+                        style: TextButton.styleFrom(
+                          visualDensity: VisualDensity.compact,
+                        ),
+                        child: const Text('数值'),
+                      ),
+                    ],
                   ),
                   Row(
                     mainAxisSize: MainAxisSize.min,
@@ -1139,7 +1180,19 @@ class _CanvasScreenState extends State<CanvasScreen>
         anchor: anchor,
         selectedCount: session?.selectedIds.length ?? 0,
         hasSession: session != null,
+        mode: _selectionMode,
         animation: animation,
+        // 模式切换不需要关气泡：它是「下次圈选怎么合并」的设置，
+        // 与当前选区无关，改完直接圈才顺手。
+        onModeChanged: (mode) => setState(() => _selectionMode = mode),
+        onInvert: () {
+          Navigator.of(dialogContext).pop();
+          _invertSelection();
+        },
+        onSplit: () {
+          Navigator.of(dialogContext).pop();
+          _splitSelection();
+        },
         onDelete: () {
           Navigator.of(dialogContext).pop();
           _deleteSelection();
@@ -1224,6 +1277,13 @@ class _CanvasScreenState extends State<CanvasScreen>
   void _beginSelectionPointer(Offset local) {
     _dragStartLocal = local;
     final session = _session;
+
+    // 加选/减选要合并的「旧选区」必须在**按下这一刻**记下来：下面框外按下会把旧会话
+    // 提交并清空，等到抬手再读 `_session` 就已经是 null，合并基数会永远是空集。
+    // 只认同图层——换了图层，旧 id 指向的笔画已不在当前层。
+    _lassoBaseIds = session != null && session.layerId == _engine.activeLayerId
+        ? Set<int>.of(session.selectedIds)
+        : const <int>{};
 
     if (session == null) {
       _startLasso(local);
@@ -1327,12 +1387,24 @@ class _CanvasScreenState extends State<CanvasScreen>
 
     final layerId = _engine.activeLayerId;
     final hits = strokesInPolygon(_engine.activeLayer.strokes, points);
-    if (hits.isEmpty) {
+
+    // 合并基数用的是**按下时**记下的旧选区（见 `_beginSelectionPointer`），不是此刻的
+    // `_session`——后者在框外按下时已经被提交并清掉了。
+    final base = _lassoBaseIds;
+    final next = switch (_selectionMode) {
+      SelectionMode.replace => hits,
+      SelectionMode.add => <int>{...base, ...hits},
+      SelectionMode.subtract => base.difference(hits),
+    };
+
+    if (next.isEmpty) {
       setState(() {
         _selectionPath = null;
         _session = null;
       });
-      _showHint('未选中笔画');
+      _showHint(
+        _selectionMode == SelectionMode.subtract ? '选区已减空' : '未选中笔画',
+      );
       return;
     }
 
@@ -1341,10 +1413,164 @@ class _CanvasScreenState extends State<CanvasScreen>
       _session = TransformSession(
         layerId: layerId,
         before: _engine.snapshotStrokes(layerId),
-        selectedIds: hits,
+        selectedIds: next,
         layerWide: false,
       );
     });
+  }
+
+  /// 反向选择：取当前图层全部笔画的补集。
+  ///
+  /// 补集会丢掉原来那条套索的形状（它已经不描述新选区了），因此清除套索路径，
+  /// 只保留变换框——框的位置由真实包围盒算出，不会误导。
+  void _invertSelection() {
+    final session = _session;
+    if (session == null) {
+      _showHint('先圈出一个选区');
+      return;
+    }
+    if (!session.isPristine) {
+      _showHint('先完成或取消当前变换');
+      return;
+    }
+
+    final layer = _engine.layers.firstWhere((item) => item.id == session.layerId);
+    final all = <int>{for (final stroke in layer.strokes) stroke.id};
+    final next = all.difference(session.selectedIds);
+    if (next.isEmpty) {
+      _showHint('反向后没有内容');
+      return;
+    }
+
+    setState(() {
+      _selectionPath = null;
+      _session = TransformSession(
+        layerId: session.layerId,
+        before: _engine.snapshotStrokes(session.layerId),
+        selectedIds: next,
+        layerWide: false,
+      );
+    });
+  }
+
+  /// 切分到选区边界：把被圈住的笔画在边界处切开。
+  ///
+  /// 破坏性操作——原笔画被替换为若干碎片，各自的 id 都是新的。因此要求「变换未动过」：
+  /// 一旦用户已经拖动过，先落地再加选/切分会让语义变得难以解释。
+  void _splitSelection() {
+    final session = _session;
+    final path = _selectionPath;
+    if (session == null || path == null) {
+      _showHint('先圈出一个选区');
+      return;
+    }
+    if (!session.isPristine) {
+      _showHint('先完成或取消当前变换');
+      return;
+    }
+
+    final created = _engine.splitStrokes(session.layerId, session.selectedIds, path);
+    if (created == 0) {
+      _showHint('没有跨边界的笔画');
+      return;
+    }
+
+    setState(() {
+      _session = null;
+      _selectionPath = null;
+      _dragMode = TransformDragMode.none;
+    });
+    unawaited(_journal.clear(widget.project.id));
+    _scheduleSave();
+    _showHint(created == 1 ? '已按选区裁剪' : '已切分为 $created 段');
+  }
+
+  /// 翻转当前选区（或整层）。
+  void _flipSelection({required bool horizontal}) {
+    final session = _session;
+    if (session == null) return;
+    setState(() {
+      session.transform = session.transform.copyWith(
+        flipX: horizontal ? !session.transform.flipX : session.transform.flipX,
+        flipY: horizontal ? session.transform.flipY : !session.transform.flipY,
+      );
+    });
+    _applyTransformPreview();
+  }
+
+  /// 数值输入：角度与缩放按**绝对值**解释，而不是在当前值上叠加。
+  ///
+  /// 绝对值更可预期：用户输入 -30° 就是想让它斜 -30°，而不是「再转 -30°」。
+  Future<void> _promptTransformValues() async {
+    final session = _session;
+    if (session == null) return;
+
+    final rotation = TextEditingController(
+      text: (session.transform.rotation * 180 / math.pi).toStringAsFixed(0),
+    );
+    final scale = TextEditingController(
+      text: (session.transform.scale * 100).toStringAsFixed(0),
+    );
+
+    final applied = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('变换数值'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            TextField(
+              key: const Key('transform-rotation-field'),
+              controller: rotation,
+              keyboardType: const TextInputType.numberWithOptions(signed: true),
+              decoration: const InputDecoration(
+                labelText: '旋转角度（度）',
+                helperText: '顺时针为正，-180 ~ 180',
+                border: OutlineInputBorder(),
+              ),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              key: const Key('transform-scale-field'),
+              controller: scale,
+              keyboardType: TextInputType.number,
+              decoration: const InputDecoration(
+                labelText: '缩放（%）',
+                helperText: '10 ~ 1000，100 表示不缩放',
+                border: OutlineInputBorder(),
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            key: const Key('transform-values-confirm'),
+            onPressed: () => Navigator.of(dialogContext).pop(true),
+            child: const Text('应用'),
+          ),
+        ],
+      ),
+    );
+
+    if (applied != true || !mounted) return;
+
+    final degrees = double.tryParse(rotation.text.trim());
+    final percent = double.tryParse(scale.text.trim());
+    setState(() {
+      session.transform = session.transform.copyWith(
+        rotation: degrees == null
+            ? session.transform.rotation
+            : degrees.clamp(-180.0, 180.0) * math.pi / 180,
+        scale: percent == null
+            ? session.transform.scale
+            : (percent / 100).clamp(0.05, 20.0),
+      );
+    });
+    _applyTransformPreview();
   }
 
   /// 把当前变换参数写进引擎（不进撤销栈），画面因此实时跟随手指。

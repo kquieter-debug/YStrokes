@@ -24,3 +24,22 @@ enum CanvasTool {
 
   bool get isEraser => strokeKind == ToolKind.eraser;
 }
+
+/// 再次套索时如何与已有选区合并。
+///
+/// 触屏没有 Shift / Alt 这类修饰键，所以把「加选 / 减选」做成工具自身的模式，
+/// 由选区气泡里的分段控件切换——比隐藏手势可发现，也不会与双指手势打架。
+enum SelectionMode {
+  /// 替换（默认）。
+  replace(label: '新建'),
+
+  /// 并集：把新圈到的笔画加进选区。
+  add(label: '追加'),
+
+  /// 差集：从选区里移除新圈到的笔画。
+  subtract(label: '减选');
+
+  const SelectionMode({required this.label});
+
+  final String label;
+}
