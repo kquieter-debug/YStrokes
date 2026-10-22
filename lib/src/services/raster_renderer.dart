@@ -89,18 +89,30 @@ class RasterRenderer implements RasterTileSource {
 
         for (final key in keys) {
           final data = surface.tile(key.$1, key.$2);
-          final old = cache.images.remove(key);
-          old?.dispose();
 
-          // 没有像素（或已整块透明）就不需要图像：直接留空。
-          if (data == null) continue;
-          final image = await _decodeTile(data, surface.tileSize);
-          if (image != null) {
-            cache.images[key] = image;
-            built = true;
+          // 瓦片不存在了（整层被替换 / 内容被丢弃）：这一块必须清空。
+          if (data == null) {
+            final removed = cache.images.remove(key);
+            if (removed != null) {
+              removed.dispose();
+              built = true;
+            }
+            continue;
           }
+
+          // 解码是异步的，期间像素笔还在往同一块缓冲里写。直接传活缓冲会让
+          // 上传的图像与「此刻的像素」错开半帧，表现为笔迹边缘抖动。
+          final image =
+              await _decodeTile(Uint8List.fromList(data), surface.tileSize);
+          if (image == null) continue;
+
+          // **新图就绪之后才换下旧图**。先移除再 await 会让这块瓦片在解码期间
+          // 缺席一帧，绘制时直接跳过它——这就是绘画过程中看到的「块状闪烁」。
+          final old = cache.images[key];
+          cache.images[key] = image;
+          old?.dispose();
+          built = true;
         }
-        built = true;
       } while (_rerun.contains(surface));
     } finally {
       _building.remove(surface);

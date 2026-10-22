@@ -174,6 +174,10 @@ class _CanvasScreenState extends State<CanvasScreen>
   /// 是否有一次像素刷新正在飞（避免同一帧堆叠多次解码）。
   bool _rasterFlushing = false;
 
+  /// 解码进行中又收到了新请求：本次结束后必须再跑一轮，
+  /// 否则这一批待办会滞留到下一次输入为止。
+  bool _rasterFlushQueued = false;
+
   /// 栅格化进行中：期间禁止再点一次（重复点击会烘焙两次）。
   bool _rasterizing = false;
 
@@ -688,17 +692,27 @@ class _CanvasScreenState extends State<CanvasScreen>
 
   /// 把待办瓦片解码成图像，完成后重绘一次。
   ///
-  /// 解码期间不阻塞输入：新一轮 dab 只会往待办集合里追加，由渲染器内部
-  /// 合并成一次补跑。
+  /// 解码期间不阻塞输入：新一轮 dab 只会往待办集合里追加。但**不能直接丢弃**
+  /// 解码进行中的调用——抬手那一帧的 dab 会因此永远上不了屏（下一次 flush
+  /// 要等下一次输入），所以这里记一个「还要再跑一轮」的标记。
   Future<void> _flushRaster() async {
-    if (_rasterFlushing) return;
+    if (_rasterFlushing) {
+      _rasterFlushQueued = true;
+      return;
+    }
     _rasterFlushing = true;
     var changed = false;
     try {
-      for (final layer in _engine.layers) {
-        final surface = layer.raster;
-        if (surface == null) continue;
-        await _rasterRenderer.build(surface, onReady: () => changed = true);
+      // 一轮只处理进入时的那批待办；期间新来的请求让循环再跑一轮。
+      // 上限防止「画得比解码快」时把 UI 线程一直占着。
+      for (var round = 0; round < 8; round++) {
+        _rasterFlushQueued = false;
+        for (final layer in _engine.layers) {
+          final surface = layer.raster;
+          if (surface == null) continue;
+          await _rasterRenderer.build(surface, onReady: () => changed = true);
+        }
+        if (!_rasterFlushQueued) break;
       }
     } finally {
       _rasterFlushing = false;
