@@ -24,7 +24,10 @@ import '../services/edit_journal.dart';
 import '../services/exporter.dart';
 import '../services/project_store.dart';
 import '../services/raster_brush.dart';
+import '../services/raster_mask.dart';
+import '../services/raster_patch.dart';
 import '../services/raster_renderer.dart';
+import '../services/raster_selection_session.dart';
 import '../services/raster_surface.dart';
 import '../services/raster_rasterizer.dart';
 import '../services/stroke_smoother.dart';
@@ -178,6 +181,35 @@ class _CanvasScreenState extends State<CanvasScreen>
   /// 否则这一批待办会滞留到下一次输入为止。
   bool _rasterFlushQueued = false;
 
+  /// 位图图层上圈出的像素选区（套索抬手时生成）。
+  ///
+  /// 与矢量的 `_session` 是**两套东西**：矢量选区的原子是笔画，位图选区的原子
+  /// 是像素，两者的命中、变换与提交方式完全不同，硬合并只会让各自都变难。
+  RasterMask? _rasterMask;
+
+  /// 正在拖动的像素选区。只在拖动期间存在，抬手立即提交或还原。
+  RasterSelectionSession? _rasterSelection;
+
+  /// 浮动内容的预览贴图（patch 解码后的结果）。
+  ui.Image? _rasterFloatImage;
+
+  /// 拖动起点（图层像素坐标）。
+  Offset? _rasterDragOrigin;
+
+  /// 本次拖动开始时的摆放参数（累加的基准，避免逐帧累乘漂移）。
+  PatchTransform _rasterDragBase = PatchTransform.identity;
+
+  /// 浮动内容的版本号：每次拖动都会变，用于让渲染缓存知道要重建。
+  int _floatingRevision = 0;
+
+  /// 脏瓦片的即时落盘定时器。
+  ///
+  /// 文档自动保存要等 800ms 且会重新编码全部笔画，而像素内容不进崩溃日志——
+  /// 崩溃一次就丢掉整段。瓦片走独立通道：只写这一笔改过的几块，
+  /// 且不重编码文档。
+  Timer? _tileFlushTimer;
+  bool _tileFlushing = false;
+
   /// 栅格化进行中：期间禁止再点一次（重复点击会烘焙两次）。
   bool _rasterizing = false;
 
@@ -216,6 +248,12 @@ class _CanvasScreenState extends State<CanvasScreen>
   /// 画不出来。
   int _pictureRasterRevision = -1;
   Rect _pictureRect = Rect.zero;
+
+  /// 浮动内容（像素选区拖动）的版本号，进缓存键。
+  ///
+  /// 拖动期间 `engine.revision` 不变（还没提交），但画面每帧都要变，
+  /// 因此需要单独一个版本号让 picture 重建。
+  int _pictureFloatingRevision = -1;
 
   /// 位图图像的版本号；每次解码完成递增。
   int _rasterRevision = 0;
@@ -304,7 +342,9 @@ class _CanvasScreenState extends State<CanvasScreen>
     _saveTimer?.cancel();
     // dispose 无法 await：保存只依赖文件系统，不需要 Widget 存活。
     unawaited(_flushSave());
+    _tileFlushTimer?.cancel();
     _committedPicture?.dispose();
+    _disposeRasterFloatImage();
     super.dispose();
   }
 
@@ -423,6 +463,11 @@ class _CanvasScreenState extends State<CanvasScreen>
   /// - 清空崩溃日志——日志里的「第几层」一旦与当前图层顺序不符，回放就会落错层；
   /// - 丢弃未提交的选区变换，否则手柄会指着一批已经被撤销掉的笔画。
   void _onDocumentChanged() {
+    // 结构变更（撤销 / 图层增删改序）之后，浮动内容指向的瓦片可能已经不属于
+    // 任何图层——放弃它，由下面的整层失效负责把画面拉回真实状态。
+    _cancelRasterSelection();
+    _rasterMask = null;
+
     if (_session != null || _selectionPath != null) {
       setState(() {
         _session = null;
@@ -674,6 +719,30 @@ class _CanvasScreenState extends State<CanvasScreen>
     if (!committed) return;
     setState(() {});
     _scheduleSave();
+    _scheduleTileFlush();
+  }
+
+  /// 像素内容一抬手就把脏瓦片落盘。
+  ///
+  /// 防抖而不是每帧写：一次连续涂画会反复触发，等到停手再落一次。
+  /// 200ms 远短于文档自动保存的 800ms，崩溃最多丢最后一笔。
+  void _scheduleTileFlush() {
+    _tileFlushTimer?.cancel();
+    _tileFlushTimer = Timer(const Duration(milliseconds: 200), () {
+      unawaited(_flushTiles());
+    });
+  }
+
+  Future<void> _flushTiles() async {
+    if (_tileFlushing) return;
+    _tileFlushing = true;
+    try {
+      await _documentStore.flushTiles(widget.project.id, _engine.layers);
+    } catch (_) {
+      // 落盘失败不影响创作：下一次完整保存会把这些瓦片再写一遍。
+    } finally {
+      _tileFlushing = false;
+    }
   }
 
   /// 丢弃这一笔（手势被系统打断）。像素已经写进 surface，必须换回快照。
@@ -915,6 +984,8 @@ class _CanvasScreenState extends State<CanvasScreen>
     // 第二根手指落下时，进行中的像素笔画按「取消」处理：
     // 双指手势不是画画的意图，半截像素不该留下。
     _abortRasterStroke();
+    // 像素选区的拖动同理：双指是要缩放画布，不是要挪内容。
+    _cancelRasterSelection();
     setState(() {});
   }
 
@@ -1544,14 +1615,238 @@ class _CanvasScreenState extends State<CanvasScreen>
   static double _angleAround(Offset center, Offset point) =>
       math.atan2(point.dy - center.dy, point.dx - center.dx);
 
+  // ---- 像素选区（位图图层） ----
+  //
+  // 与矢量选区的分工：矢量命中的是整条笔画，提交时算一次点列的 before/after；
+  // 像素命中的是一块蒙版，提交时重采样写回瓦片。两套语义差异太大，因此各自
+  // 独立成一条路径，只在「套索手势」这一层共用。
+
+  /// 位图图层上的套索按下：落在选区内就开始拖动，落在选区外就重新圈。
+  void _beginRasterSelectionPointer(Offset local) {
+    final surface = _engine.activeLayer.raster;
+    if (surface == null) return;
+
+    final pixel = _toRasterPixel(local, surface);
+    final mask = _rasterMask;
+    if (mask != null && mask.contains(pixel.dx.floor(), pixel.dy.floor())) {
+      _startRasterSelectionDrag(pixel);
+      return;
+    }
+
+    // 圈新选区：旧浮动内容先落地，避免它跨手势挂着不提交。
+    _commitRasterSelection();
+    _rasterMask = null;
+    _startLasso(local);
+  }
+
+  /// 首次拖动才把内容「提起」：只是圈一下又放开不该改动任何像素。
+  void _startRasterSelectionDrag(Offset pixel) {
+    final surface = _engine.activeLayer.raster;
+    final mask = _rasterMask;
+    if (surface == null || mask == null) return;
+
+    var session = _rasterSelection;
+    if (session == null) {
+      session = RasterSelectionSession.lift(
+        layerId: _engine.activeLayerId,
+        surface: surface,
+        mask: mask,
+      );
+      if (session == null) return;
+      _rasterSelection = session;
+      _rasterDragBase = PatchTransform.identity;
+      unawaited(_loadRasterFloatImage(session.patch));
+      // 源区域已被清空，整层瓦片都要重传。
+      _rasterRenderer.invalidateAll(surface);
+      unawaited(_flushRaster());
+      _showHint('拖动以移动选区内容');
+    } else {
+      _rasterDragBase = session.transform;
+    }
+
+    _rasterDragOrigin = pixel;
+    setState(() => _floatingRevision++);
+  }
+
+  void _updateRasterSelectionDrag(Offset local) {
+    final session = _rasterSelection;
+    final surface = _engine.activeLayer.raster;
+    final origin = _rasterDragOrigin;
+    if (session == null || surface == null || origin == null) return;
+
+    // 每帧都用「起始参数 + 累计位移」重算，不做逐帧累加：后者在长距离拖动
+    // 会因为浮点误差慢慢漂移，松手位置与手指对不上。
+    final delta = _toRasterPixel(local, surface) - origin;
+    session.transform = _rasterDragBase.copyWith(
+      dx: _rasterDragBase.dx + delta.dx,
+      dy: _rasterDragBase.dy + delta.dy,
+    );
+    setState(() => _floatingRevision++);
+  }
+
+  /// 提交浮动内容：写回像素并记一条撤销记录。
+  ///
+  /// 没有移动过就整体还原——`lift` 已经清空了源区域，此时只有换回快照才能
+  /// 保证「圈一下又放开」不损伤任何像素，也不留下无意义的撤销步骤。
+  void _commitRasterSelection() {
+    final session = _rasterSelection;
+    _rasterSelection = null;
+    _rasterDragOrigin = null;
+    _rasterDragBase = PatchTransform.identity;
+    _disposeRasterFloatImage();
+    if (session == null) return;
+
+    final surface = _engine.activeLayer.raster;
+    if (surface == null || !identical(surface, session.surface)) return;
+
+    if (!session.isMoved) {
+      _engine.activeLayer.raster = session.restoreTarget;
+      _rasterRenderer.invalidateAll(session.restoreTarget);
+      unawaited(_flushRaster());
+      setState(() {});
+      return;
+    }
+
+    final touched = session.commit();
+    // 选区跟着内容一起走，用户才能接着拖同一块。
+    _rasterMask = _rasterMask?.translated(
+      session.transform.dx.round(),
+      session.transform.dy.round(),
+    );
+    _rasterRenderer.invalidateTiles(surface, touched);
+    unawaited(_flushRaster());
+    _engine.commitRasterStroke(session.before);
+    setState(() => _floatingRevision++);
+    _scheduleSave();
+    _scheduleTileFlush();
+  }
+
+  /// 放弃正在拖动的像素选区（双指介入、结构变更、页面销毁）。
+  void _cancelRasterSelection() {
+    final session = _rasterSelection;
+    _rasterSelection = null;
+    _rasterDragOrigin = null;
+    _rasterDragBase = PatchTransform.identity;
+    _disposeRasterFloatImage();
+    if (session == null) return;
+
+    final layer = _engine.activeLayer;
+    if (!identical(layer.raster, session.surface)) return;
+    layer.raster = session.restoreTarget;
+    _rasterRenderer.invalidateAll(session.restoreTarget);
+    unawaited(_flushRaster());
+  }
+
+  void _disposeRasterFloatImage() {
+    _rasterFloatImage?.dispose();
+    _rasterFloatImage = null;
+  }
+
+  /// 把 patch 烘焙成一张图，供拖动时由 GPU 直接合成。
+  Future<void> _loadRasterFloatImage(RasterPatch patch) async {
+    if (patch.width <= 0 || patch.height <= 0) return;
+    final completer = Completer<ui.Image>();
+    ui.decodeImageFromPixels(
+      patch.toImageRgba(),
+      patch.width,
+      patch.height,
+      ui.PixelFormat.rgba8888,
+      completer.complete,
+    );
+    final image = await completer.future;
+    // 解码期间可能已经松手或换了选区：此时这张图没人要，直接释放。
+    if (!mounted || !identical(_rasterSelection?.patch, patch)) {
+      image.dispose();
+      return;
+    }
+    _disposeRasterFloatImage();
+    setState(() {
+      _rasterFloatImage = image;
+      _floatingRevision++;
+    });
+  }
+
+  /// 套索闭合后栅格化成蒙版。
+  void _commitRasterLasso(List<Offset> points) {
+    final surface = _engine.activeLayer.raster;
+    if (surface == null) return;
+
+    // 点列是归一化坐标（相对文档矩形），乘以位图尺寸即得图层像素坐标。
+    final polygon = <Offset>[
+      for (final p in points) Offset(p.dx * surface.width, p.dy * surface.height),
+    ];
+    final mask = RasterMask.fromPolygon(surface.width, surface.height, polygon);
+    if (mask.isEmpty) {
+      _rasterMask = null;
+      _showHint('未选中像素');
+      setState(() {});
+      return;
+    }
+
+    _rasterMask = mask;
+    _showHint('已选中 ${mask.selectedPixels.round()} 像素，拖动可移动');
+    setState(() {});
+  }
+
+  /// 构造给 `paintDocument` 的浮动内容。
+  ///
+  /// 矩阵链从右往左作用：先平移到 patch 中心为原点，再镜像、缩放、旋转，
+  /// 最后落到图层的目标位置，并叠加「图层像素 → 画布逻辑坐标」的缩放与偏移。
+  /// 由 `Float64List` 直接给出（列主序），避开 `Matrix4` 各版本的 API 变动。
+  FloatingRaster? _buildFloatingRaster(Rect rect) {
+    final session = _rasterSelection;
+    final image = _rasterFloatImage;
+    if (session == null || image == null || rect.isEmpty) return null;
+
+    final surface = session.surface;
+    final patch = session.patch;
+    final t = session.transform;
+    final sx = rect.width / surface.width;
+    final sy = rect.height / surface.height;
+    final halfW = patch.width / 2;
+    final halfH = patch.height / 2;
+    final cos = math.cos(t.rotation);
+    final sin = math.sin(t.rotation);
+    final flipX = t.flipX ? -1.0 : 1.0;
+    final flipY = t.flipY ? -1.0 : 1.0;
+
+    // 图层像素坐标下的线性部分。
+    final a0 = t.scale * flipX * cos;
+    final b0 = -t.scale * flipY * sin;
+    final c0 = t.scale * flipX * sin;
+    final d0 = t.scale * flipY * cos;
+
+    final cx = patch.left + halfW + t.dx;
+    final cy = patch.top + halfH + t.dy;
+    final tx0 = cx - (a0 * halfW + b0 * halfH);
+    final ty0 = cy - (c0 * halfW + d0 * halfH);
+
+    return FloatingRaster(
+      layerId: session.layerId,
+      image: image,
+      mapping: Float64List.fromList(<double>[
+        sx * a0, sy * c0, 0, 0, //
+        sx * b0, sy * d0, 0, 0, //
+        0, 0, 1, 0, //
+        sx * tx0 + rect.left, sy * ty0 + rect.top, 0, 1, //
+      ]),
+      src: Rect.fromLTWH(
+        0,
+        0,
+        patch.width.toDouble(),
+        patch.height.toDouble(),
+      ),
+    );
+  }
+
   /// 套索工具下的按下：先判手柄，再判移动，最后才是「重新起一个选区」。
   void _beginSelectionPointer(Offset local) {
     _dragStartLocal = local;
 
-    // 位图图层的选区语义是**像素蒙版**，不是「整笔命中」。那套能力还没做，
-    // 与其让他圈出一个只会移动 0 条笔画的框，不如明确说清楚。
+    // 位图图层的选区语义是**像素蒙版**，与矢量的「整笔命中」完全不同，
+    // 因此分开走各自的状态机（`_beginRasterSelectionPointer`）。
     if (_engine.activeLayer.isRaster) {
-      _showHint('位图图层暂不支持套索选区');
+      _beginRasterSelectionPointer(local);
       return;
     }
 
@@ -1607,6 +1902,13 @@ class _CanvasScreenState extends State<CanvasScreen>
   }
 
   void _updateSelectionDrag(Offset local) {
+    // 位图选区拖动不用 `_dragMode`：那套枚举描述的是矢量的手柄语义，
+    // 而像素选区只有平移一种自由度。用「有没有拖动起点」来区分最直接。
+    if (_rasterDragOrigin != null) {
+      _updateRasterSelectionDrag(local);
+      return;
+    }
+
     final session = _session;
     switch (_dragMode) {
       case TransformDragMode.none:
@@ -1644,6 +1946,13 @@ class _CanvasScreenState extends State<CanvasScreen>
   }
 
   void _finishSelectionDrag() {
+    // 像素选区抬手即提交：它没有手柄、也没有二次微调的操作条，
+    // 浮动状态跨手势挂着只会让导出 / 保存读到「看得见但还没落地」的内容。
+    if (_rasterDragOrigin != null) {
+      _commitRasterSelection();
+      return;
+    }
+
     final mode = _dragMode;
     _dragMode = TransformDragMode.none;
     if (mode == TransformDragMode.draw) {
@@ -1661,6 +1970,12 @@ class _CanvasScreenState extends State<CanvasScreen>
     _lassoPoints = null;
     if (points == null || points.length < 3) {
       setState(() {});
+      return;
+    }
+
+    // 位图图层：把点列栅格化成覆盖率蒙版，走像素选区那条路。
+    if (_engine.activeLayer.isRaster) {
+      _commitRasterLasso(points);
       return;
     }
 
@@ -2057,6 +2372,7 @@ class _CanvasScreenState extends State<CanvasScreen>
     if (cached != null &&
         _pictureRevision == _engine.revision &&
         _pictureRasterRevision == _rasterRevision &&
+        _pictureFloatingRevision == _floatingRevision &&
         _pictureRect == rect) {
       return cached;
     }
@@ -2071,12 +2387,14 @@ class _CanvasScreenState extends State<CanvasScreen>
         Color(widget.project.document.backgroundArgb),
         _engine.layers,
         rasterSource: _rasterRenderer,
+        floating: _buildFloatingRaster(rect),
       );
     }
     final picture = recorder.endRecording();
     _committedPicture = picture;
     _pictureRevision = _engine.revision;
     _pictureRasterRevision = _rasterRevision;
+    _pictureFloatingRevision = _floatingRevision;
     _pictureRect = rect;
     return picture;
   }

@@ -165,6 +165,38 @@ class RasterSurface {
     return out;
   }
 
+  /// 读取一块矩形区域的像素（越界部分补透明）。
+  ///
+  /// 返回 `width × height × 4` 的 RGBA8888 非预乘缓冲，行优先。
+  /// 只被「提起浮动选区」这类一次性操作使用，不参与逐笔路径。
+  Uint8List readRegion(int left, int top, int width, int height) {
+    final out = Uint8List(width * height * bytesPerPixel);
+    if (width <= 0 || height <= 0) return out;
+
+    for (var row = 0; row < height; row++) {
+      final y = top + row;
+      if (y < 0 || y >= this.height) continue;
+      final ty = y ~/ tileSize;
+      final tileRowBase = (y - ty * tileSize) * tileSize * bytesPerPixel;
+      final dstRow = row * width * bytesPerPixel;
+
+      for (var col = 0; col < width; col++) {
+        final x = left + col;
+        if (x < 0 || x >= this.width) continue;
+        final tx = x ~/ tileSize;
+        final data = _tiles[(tx, ty)];
+        if (data == null) continue; // 空白瓦片 = 全透明，目标缓冲本来就是 0
+        final src = tileRowBase + (x - tx * tileSize) * bytesPerPixel;
+        final dst = dstRow + col * bytesPerPixel;
+        out[dst] = data[src];
+        out[dst + 1] = data[src + 1];
+        out[dst + 2] = data[src + 2];
+        out[dst + 3] = data[src + 3];
+      }
+    }
+    return out;
+  }
+
   /// 从整层像素构造（栅格化、导入图片）。全透明瓦片会被直接丢弃。
   factory RasterSurface.fromPixels(
     int width,

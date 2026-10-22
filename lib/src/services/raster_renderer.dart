@@ -6,8 +6,33 @@ import 'package:flutter/material.dart';
 
 import 'raster_surface.dart';
 
-/// 供给 `paintDocument` 的位图来源。
+/// 预览中的浮动内容：一张已解码的图 + 它在画布上的摆放矩阵。
 ///
+/// 只在像素选区被拖动时存在。之所以不复用瓦片缓存：浮动内容的摆放是一个
+/// **矩阵**，而瓦片按网格平铺——把矩阵烘焙进瓦片意味着每拖动一帧就要重采样
+/// 一遍整块像素，而交给 GPU 画一张已经解码好的图几乎没有成本。
+class FloatingRaster {
+  const FloatingRaster({
+    required this.layerId,
+    required this.image,
+    required this.mapping,
+    required this.src,
+  });
+
+  /// 属于哪个图层。浮动内容必须画在它所属图层的 `saveLayer` 之内，
+  /// 否则图层不透明度与混合模式对它不生效。
+  final String layerId;
+
+  final ui.Image image;
+
+  /// patch 本地像素坐标 → 画布逻辑坐标（含文档矩形与视口），
+  /// 列主序，与 `Canvas.transform` 的入参一致。
+  final Float64List mapping;
+
+  final Rect src;
+}
+
+/// 供给 `paintDocument` 的位图来源。
 /// 抽成接口是因为像素到 [ui.Image] 的转换**天生是异步的**
 /// （`decodeImageFromPixels` 只能回调），而 `Canvas` 绘制必须同步。
 /// 接口因此只暴露「画这一层」，异步补齐由实现方在绘制之前完成，

@@ -118,6 +118,8 @@ void paintDocument(
   Color paperColor,
   List<DrawingLayer> layers, {
   RasterTileSource? rasterSource,
+  /// 正在拖动的像素选区内容（预览）。只有 [FloatingRaster.layerId] 那一层会画它。
+  FloatingRaster? floating,
   String? activeLayerId,
   List<rust.StrokePoint> activePoints = const <rust.StrokePoint>[],
   int activeColor = 0xFF000000,
@@ -135,7 +137,7 @@ void paintDocument(
 
     final surface = layer.raster;
     if (surface != null) {
-      _paintRasterLayer(canvas, rect, layer, surface, rasterSource);
+      _paintRasterLayer(canvas, rect, layer, surface, rasterSource, floating);
       continue;
     }
 
@@ -198,6 +200,7 @@ void _paintRasterLayer(
   DrawingLayer layer,
   RasterSurface surface,
   RasterTileSource? source,
+  FloatingRaster? floating,
 ) {
   if (source == null) return;
 
@@ -214,6 +217,21 @@ void _paintRasterLayer(
   }
 
   (source).paintLayer(canvas, rect, surface);
+
+  // 浮动内容画在瓦片之上、同一个 saveLayer 之内：它是这层内容的一部分，
+  // 因此要跟着这层一起吃合成不透明度与混合模式。
+  if (floating != null && floating.layerId == layer.id) {
+    canvas.save();
+    canvas.transform(floating.mapping);
+    // 拖动时每帧都在变，用 medium 让缩放后的边缘不至于太糊。
+    canvas.drawImageRect(
+      floating.image,
+      floating.src,
+      floating.src,
+      Paint()..filterQuality = FilterQuality.medium,
+    );
+    canvas.restore();
+  }
 
   if (needsLayer) canvas.restore();
   canvas.restore();
