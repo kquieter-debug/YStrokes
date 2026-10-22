@@ -20,6 +20,7 @@ class LayersBubble extends StatelessWidget {
     required this.anchor,
     required this.onChanged,
     required this.onCleared,
+    required this.onTransform,
     required this.onClose,
     this.animation,
   });
@@ -34,6 +35,9 @@ class LayersBubble extends StatelessWidget {
 
   /// 刚刚清空过当前图层，由画板弹提示。
   final VoidCallback onCleared;
+
+  /// 请求对某图层做整体变换。
+  final ValueChanged<String> onTransform;
 
   final VoidCallback onClose;
 
@@ -84,6 +88,7 @@ class LayersBubble extends StatelessWidget {
                   onChanged: onChanged,
                   onClose: onClose,
                   onCleared: onCleared,
+                  onTransform: onTransform,
                 ),
               ),
             ),

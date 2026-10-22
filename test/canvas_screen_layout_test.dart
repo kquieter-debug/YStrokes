@@ -62,7 +62,7 @@ void main() {
     await tester.pump(const Duration(milliseconds: 200));
   }
 
-  /// 面板内的格子（当前仅工具：画笔 + 橡皮）。
+  /// 面板内的格子（四个工具：画笔 / 橡皮 / 选区 / 吸管）。
   ///
   /// AppBar 的图标按钮同样是 InkWell，按纵向位置排除。
   List<InkWell> panelCells(WidgetTester tester) {
@@ -86,15 +86,14 @@ void main() {
     expect(tester.takeException(), isNull, reason: '窄屏不应出现 overflow');
 
     final centers = cellCenters(tester);
-    expect(centers, hasLength(2), reason: '画笔 + 橡皮；颜色与粗细已移入长按设置');
+    expect(centers, hasLength(4), reason: '画笔 / 橡皮 / 选区 / 吸管');
 
     // 贴左：全部落在屏幕左半区。
     expect(centers.every((c) => c.dx < 180), isTrue);
 
-    // 两列：两个工具并排在同一行。
-    final columns = centers.map((c) => c.dx).toSet();
-    expect(columns, hasLength(2), reason: '默认两列');
-    expect(centers.map((c) => c.dy).toSet(), hasLength(1), reason: '同一行');
+    // 两列两行。
+    expect(centers.map((c) => c.dx).toSet(), hasLength(2), reason: '默认两列');
+    expect(centers.map((c) => c.dy).toSet(), hasLength(2), reason: '四个工具占两行');
   });
 
   testWidgets('800×1280 平板：不溢出，格子随屏幕放大', (tester) async {
@@ -119,7 +118,7 @@ void main() {
   testWidgets('横屏不再溢出（历史缺陷场景）', (tester) async {
     await pumpCanvas(tester, const Size(640, 360));
     expect(tester.takeException(), isNull);
-    expect(cellCenters(tester), hasLength(2));
+    expect(cellCenters(tester), hasLength(4));
   });
 
   testWidgets('没有「长按设置」提示文字', (tester) async {

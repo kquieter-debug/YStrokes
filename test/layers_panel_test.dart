@@ -42,6 +42,7 @@ void main() {
             onChanged: () {},
             onClose: () {},
             onCleared: () {},
+            onTransform: (_) {},
           ),
         ),
       ),

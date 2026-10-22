@@ -40,6 +40,7 @@ void main() {
     Size size = const Size(400, 800),
     void Function()? onClose,
     void Function()? onCleared,
+    void Function(String)? onTransform,
   }) async {
     tester.view.devicePixelRatio = 1.0;
     tester.view.physicalSize = size;
@@ -54,6 +55,7 @@ void main() {
             anchor: Rect.fromLTRB(size.width - 192, 8, size.width - 144, anchorBottom),
             onChanged: () {},
             onCleared: onCleared ?? () {},
+            onTransform: onTransform ?? (_) {},
             onClose: onClose ?? () {},
           ),
         ),

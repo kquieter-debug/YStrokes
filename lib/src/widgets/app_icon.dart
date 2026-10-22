@@ -9,6 +9,8 @@ abstract final class AppIcons {
   static const String about = 'assets/icons/about.svg';
   static const String brush = 'assets/icons/brush.svg';
   static const String eraser = 'assets/icons/eraser.svg';
+  static const String eyedropper = 'assets/icons/eyedropper.svg';
+  static const String lasso = 'assets/icons/lasso.svg';
 }
 
 /// 单色矢量图标。

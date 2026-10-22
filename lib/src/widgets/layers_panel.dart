@@ -27,6 +27,7 @@ class LayersPanel extends StatefulWidget {
     required this.onChanged,
     required this.onClose,
     required this.onCleared,
+    required this.onTransform,
   });
 
   final DrawingEngine engine;
@@ -39,6 +40,9 @@ class LayersPanel extends StatefulWidget {
 
   /// 刚刚清空过当前图层，由画板负责弹提示。
   final VoidCallback onCleared;
+
+  /// 请求对该图层做整体变换；画板负责关气泡并进入变换态。
+  final ValueChanged<String> onTransform;
 
   @override
   State<LayersPanel> createState() => _LayersPanelState();
@@ -513,6 +517,10 @@ class _LayersPanelState extends State<LayersPanel> {
                       switch (action) {
                         case 'rename':
                           _rename(layer);
+                        case 'duplicate':
+                          _mutate(() => _engine.duplicateLayer(layer.id));
+                        case 'transform':
+                          widget.onTransform(layer.id);
                         case 'merge':
                           _mergeDown(layer);
                         case 'delete':
@@ -523,6 +531,16 @@ class _LayersPanelState extends State<LayersPanel> {
                       const PopupMenuItem<String>(
                         value: 'rename',
                         child: Text('重命名'),
+                      ),
+                      const PopupMenuItem<String>(
+                        value: 'duplicate',
+                        child: Text('复制图层'),
+                      ),
+                      PopupMenuItem<String>(
+                        value: 'transform',
+                        // 空图层没有可变换的内容，置灰比让他点一下才知道更省事。
+                        enabled: layer.strokes.isNotEmpty,
+                        child: const Text('变换图层'),
                       ),
                       PopupMenuItem<String>(
                         value: 'merge',

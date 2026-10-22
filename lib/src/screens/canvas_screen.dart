@@ -5,6 +5,7 @@ import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
 
+import '../models/canvas_tool.dart';
 import '../models/layer.dart';
 import '../models/layer_blend.dart';
 import '../models/project.dart';
@@ -15,14 +16,20 @@ import '../rust/api/tools.dart';
 import '../services/app_settings.dart';
 import '../services/canvas_geometry.dart';
 import '../services/canvas_viewport.dart';
+import '../services/color_picker.dart';
 import '../services/document_painter.dart';
 import '../services/document_store.dart';
 import '../services/drawing_engine.dart';
+import '../services/edit_journal.dart';
 import '../services/exporter.dart';
 import '../services/project_store.dart';
 import '../services/stroke_smoother.dart';
+import '../services/transform_geometry.dart';
+import '../services/transform_session.dart';
 import '../widgets/app_icon.dart';
 import '../widgets/layers_bubble.dart';
+import '../widgets/selection_bubble.dart';
+import '../widgets/selection_overlay.dart';
 import '../widgets/tool_settings_bubble.dart';
 import 'export_screen.dart';
 
@@ -39,7 +46,12 @@ import 'export_screen.dart';
 /// 屏幕尺寸变化（旋转、分屏、折叠）只会改变工作台大小与文档的显示比例，
 /// 不会改变文档自身的形状，因此笔画不会因设备变化而拉伸。
 class CanvasScreen extends StatefulWidget {
-  const CanvasScreen({super.key, required this.project, this.documentStore});
+  const CanvasScreen({
+    super.key,
+    required this.project,
+    this.documentStore,
+    this.journal,
+  });
 
   final DrawingProject project;
 
@@ -48,6 +60,9 @@ class CanvasScreen extends StatefulWidget {
   /// 生产环境留空，走默认的「应用文档目录」；测试可注入以临时目录为根的实例，
   /// 从而无需 path_provider 插件即可验证界面行为。
   final DocumentStore? documentStore;
+
+  /// 崩溃恢复日志。生产环境留空（与 [documentStore] 同根），测试可注入。
+  final EditJournal? journal;
 
   @override
   State<CanvasScreen> createState() => _CanvasScreenState();
@@ -60,26 +75,36 @@ class _CanvasScreenState extends State<CanvasScreen>
       widget.documentStore ?? DocumentStore();
   final ProjectStore _projectStore = ProjectStore();
 
-  /// 当前工具。
-  ToolKind _tool = ToolKind.brush;
+  /// 当前工具。吸管与套索不产生笔画，因此这里用 [CanvasTool] 而不是 `ToolKind`。
+  CanvasTool _tool = CanvasTool.brush;
 
-  /// 各工具各自的参数。切回某工具时，它上次用的颜色与笔宽仍在。
-  final Map<ToolKind, ToolSettings> _settings = <ToolKind, ToolSettings>{
+  /// 最近一次「会画画」的工具。吸管取完色要回到它——回到画笔是错的，
+  /// 用户可能正在用橡皮。
+  CanvasTool _lastPaintTool = CanvasTool.brush;
+
+  /// 各绘画工具各自的参数。切回某工具时，它上次用的颜色与笔宽仍在。
+  final Map<CanvasTool, ToolSettings> _settings =
+      <CanvasTool, ToolSettings>{
     // 画笔默认开启压感：这是产品主张「笔触手感」的主要载体。
-    ToolKind.brush: const ToolSettings(
+    CanvasTool.brush: const ToolSettings(
       color: Color(0xFF000000),
       widthRatio: 0.01,
       pressureEnabled: true,
     ),
     // 橡皮默认粗一些、且不跟随压力：擦除需要的是稳定的覆盖范围，
     // 而不是笔锋——压力一变细，擦除会变得难以控制。
-    ToolKind.eraser: const ToolSettings(
+    CanvasTool.eraser: const ToolSettings(
       color: Color(0xFF000000),
       widthRatio: 0.03,
     ),
   };
 
-  ToolSettings get _activeSettings => _settings[_tool]!;
+  /// 当前绘画工具的参数字。吸管与套索回落到画笔的参数，仅用于显示颜色。
+  ToolSettings get _paintSettings =>
+      _settings[_tool] ?? _settings[CanvasTool.brush]!;
+
+  ToolSettings settingsFor(CanvasTool tool) =>
+      _settings[tool] ?? _settings[CanvasTool.brush]!;
 
   /// 各工具的行为参数，进入画板时从 Rust 读取一次并缓存。
   ///
@@ -99,7 +124,11 @@ class _CanvasScreenState extends State<CanvasScreen>
     ),
   };
 
-  ToolProfile get _profile => _profiles[_tool] ?? _fallbackProfiles[_tool]!;
+  /// 当前工具的行为参数；非绘画工具没有对应项，回落到画笔。
+  ToolProfile get _profile {
+    final kind = _tool.strokeKind ?? ToolKind.brush;
+    return _profiles[kind] ?? _fallbackProfiles[kind]!;
+  }
 
   /// 当前笔画的增量平滑器；为空表示没有正在绘制的笔画。
   StrokeSmoother? _smoother;
@@ -174,6 +203,30 @@ class _CanvasScreenState extends State<CanvasScreen>
   /// 自动保存节流窗口：抬笔后静置该时长才落盘，避免每笔都写文件。
   static const Duration _saveDebounce = Duration(milliseconds: 800);
 
+  /// 崩溃恢复日志：抬笔即追加一笔，完整保存成功后清空。
+  late final EditJournal _journal =
+      widget.journal ?? EditJournal();
+
+  // ---- 选区与变换 ----
+
+  /// 正在画的套索（归一化坐标）；为空表示没在画。
+  List<Offset>? _lassoPoints;
+
+  /// 已闭合的选区（归一化坐标），仅用于显示；命中集合在 [_session] 里。
+  List<Offset>? _selectionPath;
+
+  /// 变换会话；为空表示当前没有待提交的变换。
+  TransformSession? _session;
+
+  /// 当前单指拖动的作用。
+  TransformDragMode _dragMode = TransformDragMode.none;
+
+  /// 拖动基线。全部取「手势开始那一刻」的快照，避免逐帧累乘。
+  Offset _dragStartLocal = Offset.zero;
+  StrokeTransform _dragStartTransform = StrokeTransform.identity;
+  double _dragStartScale = 1;
+  double _dragStartRotation = 0;
+
   @override
   void initState() {
     super.initState();
@@ -223,10 +276,15 @@ class _CanvasScreenState extends State<CanvasScreen>
       final stored = await _documentStore.loadDocument(widget.project.id);
       if (!mounted) return;
       _engine.load(stored.layers);
+      final recovered = await _replayJournal();
+      if (!mounted) return;
       setState(() {
         _loading = false;
-        _loadWarning = stored.error;
+        _loadWarning = stored.error ??
+            (recovered > 0 ? '已恢复 $recovered 笔未保存的内容' : null);
       });
+      // 恢复出来的内容只在内存里，立刻安排一次完整落盘，把它写进正式文档。
+      if (recovered > 0) _scheduleSave();
     } catch (error) {
       if (!mounted) return;
       setState(() {
@@ -234,6 +292,36 @@ class _CanvasScreenState extends State<CanvasScreen>
         _loadWarning = '读取工程失败：$error';
       });
     }
+  }
+
+  /// 回放崩溃日志：按图层下标与笔画 id 去重后补进内存。
+  ///
+  /// 返回补回的笔数。去重是必要的——日志只覆盖「最后一次完整保存之后」的增量，
+  /// 但若清空失败（例如清空时进程又被杀），重放可能遇到已落盘的笔画。
+  Future<int> _replayJournal() async {
+    try {
+      final entries = await _journal.read(widget.project.id);
+      if (entries.isEmpty) return 0;
+      return _engine.restoreStrokes(groupByLayer(entries));
+    } catch (_) {
+      // 日志损坏不该影响正常打开工程：直接忽略，下次保存会覆盖它。
+      return 0;
+    }
+  }
+
+  /// 记录一笔到崩溃日志（抬笔即写，不等 800ms 的保存节流）。
+  void _recordJournal(Stroke stroke) {
+    final index = _engine.layers.indexWhere(
+      (layer) => layer.id == _engine.activeLayerId,
+    );
+    if (index < 0) return;
+    unawaited(
+      _journal.appendStroke(
+        projectId: widget.project.id,
+        layerIndex: index,
+        stroke: stroke,
+      ),
+    );
   }
 
   void _scheduleSave() {
@@ -257,6 +345,8 @@ class _CanvasScreenState extends State<CanvasScreen>
         _dirty = false;
         try {
           await _documentStore.saveDocument(widget.project.id, _engine.layers);
+          // 完整快照已落盘，日志里的增量被覆盖，可以整份删除。
+          unawaited(_journal.clear(widget.project.id));
           await _projectStore.touchProject(widget.project.id);
           // 缩略图与保存解耦：算完再写，不阻塞落盘主流程。
           unawaited(_refreshThumbnail());
@@ -277,8 +367,22 @@ class _CanvasScreenState extends State<CanvasScreen>
   }
 
   /// 内容变化后的统一收尾：刷新界面 + 触发保存。
+  /// 结构性变更（撤销、图层增删改序）之后：
+  ///
+  /// - 清空崩溃日志——日志里的「第几层」一旦与当前图层顺序不符，回放就会落错层；
+  /// - 丢弃未提交的选区变换，否则手柄会指着一批已经被撤销掉的笔画。
   void _onDocumentChanged() {
-    setState(() {});
+    if (_session != null || _selectionPath != null) {
+      setState(() {
+        _session = null;
+        _selectionPath = null;
+        _lassoPoints = null;
+        _dragMode = TransformDragMode.none;
+      });
+    } else {
+      setState(() {});
+    }
+    unawaited(_journal.clear(widget.project.id));
     _scheduleSave();
   }
 
@@ -394,6 +498,17 @@ class _CanvasScreenState extends State<CanvasScreen>
     if (_documentRect.isEmpty) return;
 
     _activePointer = e.pointer;
+
+    // 套索与吸管不产生笔画：它们走自己的分支，不创建平滑器。
+    if (_tool == CanvasTool.lasso) {
+      _beginSelectionPointer(e.localPosition);
+      return;
+    }
+    if (_tool == CanvasTool.eyedropper) {
+      unawaited(_pickColorAt(e.localPosition));
+      return;
+    }
+
     _strokeStartMs = DateTime.now().millisecondsSinceEpoch;
 
     final smoother = StrokeSmoother(
@@ -416,8 +531,15 @@ class _CanvasScreenState extends State<CanvasScreen>
       return;
     }
 
+    if (e.pointer != _activePointer) return;
+    if (_tool == CanvasTool.lasso) {
+      _updateSelectionDrag(e.localPosition);
+      return;
+    }
+    if (_tool == CanvasTool.eyedropper) return;
+
     final smoother = _smoother;
-    if (e.pointer != _activePointer || smoother == null) return;
+    if (smoother == null) return;
     smoother.add(_toNormalized(e.localPosition, e.pressure));
     setState(() => _activeRevision++);
   }
@@ -438,6 +560,18 @@ class _CanvasScreenState extends State<CanvasScreen>
       return; // 变换结束时残余的指针不再落笔，避免误画
     }
 
+    if (_tool == CanvasTool.lasso) {
+      if (e.pointer == _activePointer) {
+        _activePointer = null;
+        _finishSelectionDrag();
+      }
+      return;
+    }
+    if (_tool == CanvasTool.eyedropper) {
+      if (e.pointer == _activePointer) _activePointer = null;
+      return;
+    }
+
     if (e.pointer != _activePointer) return;
     _activePointer = null;
     final smoother = _smoother;
@@ -455,18 +589,20 @@ class _CanvasScreenState extends State<CanvasScreen>
       return;
     }
 
+    late Stroke committed;
     setState(() {
       _smoother = null;
       _activeRevision++;
-      _engine.addStroke(
+      committed = _engine.addStroke(
         points,
-        tool: _tool,
-        color: _activeSettings.color.toARGB32(),
-        widthRatio: _activeSettings.widthRatio,
+        tool: _tool.strokeKind!,
+        color: _paintSettings.color.toARGB32(),
+        widthRatio: _paintSettings.widthRatio,
         // 画下这一刻的开关状态随笔画一起保存，之后改开关不影响它（ADR-019）。
-        usesPressure: _activeSettings.pressureEnabled,
+        usesPressure: _paintSettings.pressureEnabled,
       );
     });
+    _recordJournal(committed);
     _scheduleSave();
   }
 
@@ -482,6 +618,16 @@ class _CanvasScreenState extends State<CanvasScreen>
 
     // 手势被系统打断（来电、返回手势等）时丢弃这一笔的半成品。
     if (e.pointer != _activePointer) return;
+    if (_tool == CanvasTool.lasso) {
+      // 套索被打断：保留已画的部分（还可能是想要的形状），只是停止追加。
+      if (_dragMode == TransformDragMode.draw) {
+        _lassoPoints = null;
+      }
+      _dragMode = TransformDragMode.none;
+      _activePointer = null;
+      setState(() {});
+      return;
+    }
     setState(() {
       _activePointer = null;
       _smoother = null;
@@ -601,10 +747,14 @@ class _CanvasScreenState extends State<CanvasScreen>
   // ---- 工具栏动作 ----
 
   void _undo() {
+    // 变换未提交时先落地：否则撤销会撤到「变换前」的那一步，
+    // 而屏幕上还显示着变换后的预览，两者对不上。
+    _commitSession();
     if (_engine.undo()) _onDocumentChanged();
   }
 
   void _redo() {
+    _commitSession();
     if (_engine.redo()) _onDocumentChanged();
   }
 
@@ -668,6 +818,14 @@ class _CanvasScreenState extends State<CanvasScreen>
           _scheduleSave();
         },
         onCleared: () => _showHint('已清空当前图层'),
+        onTransform: (layerId) {
+          Navigator.of(dialogContext).pop();
+          // 气泡关闭后下一帧再进入变换态：此时画布已完成布局，
+          // 手柄位置才是对的。
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (mounted) _beginLayerTransform(layerId);
+          });
+        },
         onClose: () => Navigator.of(dialogContext).pop(),
       ),
     );
@@ -772,8 +930,62 @@ class _CanvasScreenState extends State<CanvasScreen>
                     ),
                   ),
                   _buildBrushPanel(),
+                  if (_session != null) _buildTransformBar(),
                 ],
               ),
+      ),
+    );
+  }
+
+  /// 变换操作条：明确要求确认才落笔，避免「松手即生效」带来的误改。
+  Widget _buildTransformBar() {
+    final theme = Theme.of(context);
+    final wide = _session?.layerWide ?? false;
+
+    return Positioned(
+      left: 0,
+      right: 0,
+      bottom: 20,
+      child: Center(
+        child: Material(
+          elevation: 6,
+          borderRadius: BorderRadius.circular(20),
+          color: theme.colorScheme.surfaceContainerHigh,
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(8, 6, 8, 6),
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 340),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(
+                    wide ? '整层变换' : '选区变换',
+                    style: theme.textTheme.labelMedium?.copyWith(
+                      color: theme.colorScheme.onSurfaceVariant,
+                    ),
+                  ),
+                  Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      TextButton(
+                        key: const Key('transform-cancel'),
+                        onPressed: _cancelSession,
+                        child: const Text('取消'),
+                      ),
+                      const SizedBox(width: 8),
+                      FilledButton.icon(
+                        key: const Key('transform-commit'),
+                        onPressed: _commitSession,
+                        icon: const Icon(Icons.check, size: 18),
+                        label: const Text('完成'),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
       ),
     );
   }
@@ -860,18 +1072,38 @@ class _CanvasScreenState extends State<CanvasScreen>
 
   /// 选中工具。再次点按当前工具时打开它的设置——长按是显式入口，
   /// 点按已激活工具是符合直觉的隐含入口，两者都指向同一个面板。
-  void _selectTool(ToolKind tool) {
+  void _selectTool(CanvasTool tool) {
     if (tool == _tool) {
       unawaited(_openToolSettings(tool));
       return;
     }
-    setState(() => _tool = tool);
+    // 换工具视为结束当前变换：提交而不是丢弃（「所见即所存」）。
+    _commitSession();
+    setState(() {
+      _tool = tool;
+      if (tool.paints) _lastPaintTool = tool;
+    });
   }
 
   /// 长按工具（或再次点按已选中的工具）：在工具栏旁边弹出设置气泡。
-  Future<void> _openToolSettings(ToolKind tool) async {
+  ///
+  /// 四类工具的入口一致、内容不同：画笔/橡皮是笔触参数，选区是「对选区的动作」，
+  /// 吸管没有可调项，因此给一条一次性提示而不是空面板。
+  Future<void> _openToolSettings(CanvasTool tool) async {
     final anchor = _toolbarGlobalRect();
     if (anchor == null) return;
+
+    if (tool == CanvasTool.lasso) {
+      await _openSelectionBubble(anchor);
+      return;
+    }
+    if (tool == CanvasTool.eyedropper) {
+      _showHint('吸管：点按画面取色，取完回到上一个绘画工具');
+      return;
+    }
+
+    final kind = tool.strokeKind;
+    if (kind == null) return;
 
     await showGeneralDialog<void>(
       context: context,
@@ -884,7 +1116,7 @@ class _CanvasScreenState extends State<CanvasScreen>
       // 动画由气泡自己施加：它知道自己在工具栏的哪一侧，因此能把缩放锚点
       // 放在朝向工具栏的那条边上。交给 transitionBuilder 只能绕整页缩放。
       pageBuilder: (dialogContext, animation, _) => ToolSettingsBubble(
-        tool: tool,
+        tool: kind,
         initial: _settings[tool]!,
         anchor: anchor,
         animation: animation,
@@ -894,17 +1126,346 @@ class _CanvasScreenState extends State<CanvasScreen>
     );
   }
 
+  /// 选区工具的气泡：显示命中数量，并给出「删除选中 / 取消选区」两个动作。
+  Future<void> _openSelectionBubble(Rect anchor) async {
+    final session = _session;
+    await showGeneralDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      barrierLabel: '关闭选区设置',
+      barrierColor: Colors.transparent,
+      transitionDuration: _bubbleDuration,
+      pageBuilder: (dialogContext, animation, _) => SelectionBubble(
+        anchor: anchor,
+        selectedCount: session?.selectedIds.length ?? 0,
+        hasSession: session != null,
+        animation: animation,
+        onDelete: () {
+          Navigator.of(dialogContext).pop();
+          _deleteSelection();
+        },
+        onClear: () {
+          Navigator.of(dialogContext).pop();
+          _cancelSession();
+        },
+        onClose: () => Navigator.of(dialogContext).pop(),
+      ),
+    );
+  }
+
   /// 应用气泡里的改动。
   ///
   /// 只更新「当前工具参数」：已画笔画的外观由自身标记决定（ADR-019），
   /// 因此不需要让渲染缓存失效——这一点与上一轮全局重绘的做法相反。
-  void _applyToolSettings(ToolKind tool, ToolSettings value) {
+  void _applyToolSettings(CanvasTool tool, ToolSettings value) {
     if (!mounted) return;
     setState(() {
       _settings[tool] = value;
       // 活动笔画（若恰好存在）按新参数重绘。
       _activeRevision++;
     });
+  }
+
+  // ---- 选区与变换 ----
+
+  /// 归一化坐标 → 本地坐标（含视口变换）。
+  Offset _normalizedToLocal(Offset normalized) {
+    final rect = _documentRect;
+    return _viewport.toScreen(
+      Offset(
+        rect.left + normalized.dx * rect.width,
+        rect.top + normalized.dy * rect.height,
+      ),
+      rect,
+    );
+  }
+
+  /// 本地坐标 → 归一化坐标，**不夹到 0~1**。
+  ///
+  /// 绘制用的 [_toNormalized] 会把点夹在纸面内（笔画不能跑到纸外），
+  /// 而套索与变换必须允许越界：用户可能想圈住纸外的空白来平移内容。
+  Offset _localToNormalizedRaw(Offset local) {
+    final rect = _documentRect;
+    if (rect.isEmpty) return Offset.zero;
+    final doc = _viewport.toDocument(local, rect);
+    return Offset(
+      (doc.dx - rect.left) / rect.width,
+      (doc.dy - rect.top) / rect.height,
+    );
+  }
+
+  List<Offset>? _lassoLocal() {
+    final points = _lassoPoints;
+    if (points == null || points.isEmpty) return null;
+    return <Offset>[for (final point in points) _normalizedToLocal(point)];
+  }
+
+  /// 变换框四角（本地坐标）。空列表表示没有可画的框。
+  List<Offset> _sessionCorners() {
+    final session = _session;
+    if (session == null) return const <Offset>[];
+    final bounds = session.bounds;
+    if (bounds.isEmpty) return const <Offset>[];
+    return <Offset>[
+      _normalizedToLocal(bounds.topLeft),
+      _normalizedToLocal(bounds.topRight),
+      _normalizedToLocal(bounds.bottomRight),
+      _normalizedToLocal(bounds.bottomLeft),
+    ];
+  }
+
+  static Offset _quadCenter(List<Offset> corners) =>
+      (corners[0] + corners[2]) / 2;
+
+  static double _angleAround(Offset center, Offset point) =>
+      math.atan2(point.dy - center.dy, point.dx - center.dx);
+
+  /// 套索工具下的按下：先判手柄，再判移动，最后才是「重新起一个选区」。
+  void _beginSelectionPointer(Offset local) {
+    _dragStartLocal = local;
+    final session = _session;
+
+    if (session == null) {
+      _startLasso(local);
+      return;
+    }
+
+    final corners = _sessionCorners();
+    if (corners.length == 4) {
+      final center = _quadCenter(corners);
+      if ((local - rotateHandleFor(corners)).distance <=
+          SelectionMetrics.hitRadius) {
+        _dragMode = TransformDragMode.rotate;
+        _dragStartTransform = session.transform;
+        _dragStartRotation = _angleAround(center, local);
+        return;
+      }
+      for (final corner in corners) {
+        if ((local - corner).distance <= SelectionMetrics.hitRadius) {
+          _dragMode = TransformDragMode.scale;
+          _dragStartTransform = session.transform;
+          _dragStartScale = math.max(1.0, (local - center).distance);
+          return;
+        }
+      }
+      if (quadContains(corners, local)) {
+        _dragMode = TransformDragMode.move;
+        _dragStartTransform = session.transform;
+        return;
+      }
+    }
+
+    // 框外按下：先把已有变换落地，再开始一个新选区——一次点击只做一件事。
+    _commitSession();
+    _startLasso(local);
+  }
+
+  void _startLasso(Offset local) {
+    _selectionPath = null;
+    _lassoPoints = <Offset>[_localToNormalizedRaw(local)];
+    _dragMode = TransformDragMode.draw;
+    setState(() {});
+  }
+
+  void _updateSelectionDrag(Offset local) {
+    final session = _session;
+    switch (_dragMode) {
+      case TransformDragMode.none:
+      case TransformDragMode.draw:
+        if (_dragMode == TransformDragMode.draw) {
+          _lassoPoints?.add(_localToNormalizedRaw(local));
+          setState(() {});
+        }
+      case TransformDragMode.move:
+        if (session == null) return;
+        final delta =
+            _localToNormalizedRaw(local) - _localToNormalizedRaw(_dragStartLocal);
+        session.transform = _dragStartTransform.copyWith(
+          offset: _dragStartTransform.offset + delta,
+        );
+        _applyTransformPreview();
+      case TransformDragMode.scale:
+        if (session == null) return;
+        final center = _quadCenter(_sessionCorners());
+        final factor = (local - center).distance / _dragStartScale;
+        session.transform = _dragStartTransform.copyWith(
+          scale: (_dragStartTransform.scale * factor).clamp(0.05, 20.0),
+        );
+        _applyTransformPreview();
+      case TransformDragMode.rotate:
+        if (session == null) return;
+        final center = _quadCenter(_sessionCorners());
+        final angle = _angleAround(center, local);
+        session.transform = _dragStartTransform.copyWith(
+          rotation:
+              _dragStartTransform.rotation + (angle - _dragStartRotation),
+        );
+        _applyTransformPreview();
+    }
+  }
+
+  void _finishSelectionDrag() {
+    final mode = _dragMode;
+    _dragMode = TransformDragMode.none;
+    if (mode == TransformDragMode.draw) {
+      _commitLasso();
+      return;
+    }
+    if (mode == TransformDragMode.none) return;
+    // 松开手柄后不提交：用户还要看结果、可能继续微调，确认由底部操作条负责。
+    setState(() {});
+  }
+
+  /// 闭合套索并按命中笔画建立变换会话。
+  void _commitLasso() {
+    final points = _lassoPoints;
+    _lassoPoints = null;
+    if (points == null || points.length < 3) {
+      setState(() {});
+      return;
+    }
+
+    final layerId = _engine.activeLayerId;
+    final hits = strokesInPolygon(_engine.activeLayer.strokes, points);
+    if (hits.isEmpty) {
+      setState(() {
+        _selectionPath = null;
+        _session = null;
+      });
+      _showHint('未选中笔画');
+      return;
+    }
+
+    setState(() {
+      _selectionPath = List<Offset>.of(points);
+      _session = TransformSession(
+        layerId: layerId,
+        before: _engine.snapshotStrokes(layerId),
+        selectedIds: hits,
+        layerWide: false,
+      );
+    });
+  }
+
+  /// 把当前变换参数写进引擎（不进撤销栈），画面因此实时跟随手指。
+  void _applyTransformPreview() {
+    final session = _session;
+    if (session == null) return;
+    setState(() {
+      _engine.setStrokes(session.layerId, session.strokes());
+    });
+  }
+
+  /// 提交变换：一条撤销记录，然后清掉选区。
+  void _commitSession() {
+    final session = _session;
+    if (session == null) {
+      if (_selectionPath != null) setState(() => _selectionPath = null);
+      return;
+    }
+    if (session.isPristine) {
+      // 没动过就不该在撤销栈里留下一条「没有任何变化」的记录。
+      _cancelSession();
+      return;
+    }
+
+    _engine.commitStrokes(session.layerId, session.before);
+    setState(() {
+      _session = null;
+      _selectionPath = null;
+      _dragMode = TransformDragMode.none;
+    });
+    // 笔画位置变了，日志里的「第几层」不再可信，直接清空，靠随后的完整保存兜底。
+    unawaited(_journal.clear(widget.project.id));
+    _scheduleSave();
+  }
+
+  /// 放弃变换：把笔画恢复成快照，选区一并清掉。
+  void _cancelSession() {
+    final session = _session;
+    if (session != null && !session.isPristine) {
+      _engine.setStrokes(session.layerId, session.before);
+    }
+    setState(() {
+      _session = null;
+      _selectionPath = null;
+      _lassoPoints = null;
+      _dragMode = TransformDragMode.none;
+    });
+  }
+
+  /// 删除选中的笔画（可撤销）。
+  void _deleteSelection() {
+    final session = _session;
+    if (session == null) return;
+    final count = session.selectedIds.length;
+
+    setState(() {
+      _engine.removeStrokes(session.layerId, session.selectedIds);
+      _session = null;
+      _selectionPath = null;
+      _dragMode = TransformDragMode.none;
+    });
+    unawaited(_journal.clear(widget.project.id));
+    _scheduleSave();
+    _showHint('已删除 $count 笔');
+  }
+
+  /// 从图层面板进入「整层变换」：选中该层全部笔画，交给同一套手柄。
+  void _beginLayerTransform(String layerId) {
+    final before = _engine.snapshotStrokes(layerId);
+    if (before.isEmpty) {
+      _showHint('该图层没有内容');
+      return;
+    }
+    setState(() {
+      // 手柄与拖动逻辑属于套索工具，因此切换过去，避免「看得见手柄却拖不动」。
+      _tool = CanvasTool.lasso;
+      _lassoPoints = null;
+      _selectionPath = null;
+      _session = TransformSession(
+        layerId: layerId,
+        before: before,
+        selectedIds: <int>{for (final stroke in before) stroke.id},
+        layerWide: true,
+      );
+      _dragMode = TransformDragMode.none;
+    });
+    _showHint('整层变换：拖动框内移动，拖角缩放，拖顶部圆点旋转');
+  }
+
+  // ---- 吸管 ----
+
+  /// 在指定位置取样「所见即所得」的颜色。
+  ///
+  /// 做法是把整篇内容画到 1×1 的画布上，只取这一个像素：比整幅光栅化便宜得多，
+  /// 而且取到的就是合成后的颜色（含图层不透明度与混合模式），
+  /// 与「屏幕上看到的那个颜色」一致。
+  Future<void> _pickColorAt(Offset local) async {
+    final rect = _documentRect;
+    if (rect.isEmpty) return;
+
+    final normalized = _localToNormalizedRaw(local);
+    final doc = Offset(
+      rect.left + normalized.dx * rect.width,
+      rect.top + normalized.dy * rect.height,
+    );
+
+    final picked = await sampleColorAt(
+      picture: _ensurePicture(rect),
+      docPoint: doc,
+      fallback: Color(widget.project.document.backgroundArgb),
+    );
+
+    if (!mounted) return;
+    setState(() {
+      _settings[CanvasTool.brush] =
+          _settings[CanvasTool.brush]!.copyWith(color: picked);
+      _tool = _lastPaintTool;
+    });
+
+    final hex = picked.toARGB32().toRadixString(16).padLeft(8, '0');
+    _showHint('已取色 #${hex.substring(2).toUpperCase()}');
   }
 
   /// 工具栏面板当前的全局矩形，用作气泡的锚点。
@@ -951,18 +1512,26 @@ class _CanvasScreenState extends State<CanvasScreen>
                   activeLayerId: _engine.activeLayerId,
                   activeLayerOpacity: _engine.activeLayer.opacity,
                   activePoints: _activePoints,
-                  activeColor: _activeSettings.color.toARGB32(),
+                  activeColor: _paintSettings.color.toARGB32(),
                   // 与已提交笔画共用同一换算，避免极细笔画在提交前后差 1px。
                   activeWidth: strokeWidthPx(
-                    _activeSettings.widthRatio,
+                    _paintSettings.widthRatio,
                     rect.shortestSide,
                   ),
                   activeErase: erasing,
                   activeRevision: _activeRevision,
                   viewport: _viewport,
                   activeBlend: _engine.activeLayer.blendMode,
-                  activePressure: _activeSettings.pressureEnabled,
+                  activePressure: _paintSettings.pressureEnabled,
                 ),
+              ),
+              // 选区与变换框画在内容之上、指针层之下：它们不参与命中，
+              // 手势仍由外层 Listener 统一处理。
+              SelectionLayer(
+                lasso: _lassoLocal(),
+                corners: _session == null ? null : _sessionCorners(),
+                showHandles: _session != null,
+                accent: theme.colorScheme.primary,
               ),
             ],
           ),
@@ -1180,18 +1749,22 @@ class _BrushPanel extends StatelessWidget {
   });
 
   final _ToolbarMetrics metrics;
-  final ToolKind selectedTool;
-  final ValueChanged<ToolKind> onSelectTool;
-  final ValueChanged<ToolKind> onLongPressTool;
+  final CanvasTool selectedTool;
+  final ValueChanged<CanvasTool> onSelectTool;
+  final ValueChanged<CanvasTool> onLongPressTool;
   final ValueChanged<DragUpdateDetails> onDragToolbar;
   final VoidCallback onDragToolbarEnd;
 
   static const int _columns = 2;
 
-  /// 当前可用的绘画工具。后续扩容直接在这里追加。
-  static const List<({ToolKind kind, String icon, String label})> _tools = [
-    (kind: ToolKind.brush, icon: AppIcons.brush, label: '画笔'),
-    (kind: ToolKind.eraser, icon: AppIcons.eraser, label: '橡皮'),
+  /// 工具栏里的工具。顺序即网格顺序（两列，自上而下、自左而右）。
+  ///
+  /// 图标放在 UI 层而不是枚举里：`CanvasTool` 属于模型，不该依赖 `assets/`。
+  static const List<({CanvasTool kind, String icon, String label})> _tools = [
+    (kind: CanvasTool.brush, icon: AppIcons.brush, label: '画笔'),
+    (kind: CanvasTool.eraser, icon: AppIcons.eraser, label: '橡皮'),
+    (kind: CanvasTool.lasso, icon: AppIcons.lasso, label: '选区'),
+    (kind: CanvasTool.eyedropper, icon: AppIcons.eyedropper, label: '吸管'),
   ];
 
   /// 网格宽度：`列数 × 格子 + 列间距`。拖动条取同一宽度，视觉上像一条把手。
