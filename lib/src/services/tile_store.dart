@@ -100,6 +100,34 @@ class TileStore {
     }
   }
 
+  /// 只写这些瓦片，**不删除任何文件**。
+  ///
+  /// 与 [saveTiles] 的分工：那个是「完整保存」，需要知道哪些瓦片还活着才能
+  /// 清理孤儿；这个用于笔画抬手时的即时落盘——此时只关心「这一笔改了哪几块」，
+  /// 而判断 `live` 要扫一遍整层像素（O(画布面积)），每笔都做太贵。
+  ///
+  /// 擦成透明的瓦片会暂时留在磁盘上，由下一次完整保存清掉。崩溃恢复宁可多
+  /// 保留几块透明 PNG，也不该为了清理而多扫两百万个像素。
+  Future<void> writeDirtyTiles(
+    Directory projectDir,
+    int layerOrdinal,
+    Map<TileKey, Uint8List> tiles,
+    int tileSize,
+  ) async {
+    if (tiles.isEmpty) return;
+    final dir = _layerDir(projectDir, layerOrdinal);
+    if (!await dir.exists()) await dir.create(recursive: true);
+
+    for (final entry in tiles.entries) {
+      final (x, y) = entry.key;
+      await _writeTile(
+        File('${dir.path}/${x}_$y.$extension'),
+        entry.value,
+        tileSize,
+      );
+    }
+  }
+
   /// 删除不再存在的图层对应的瓦片目录。
   ///
   /// 图层序号是按顺序推导的，因此删掉中间一层会让其后的序号整体前移——

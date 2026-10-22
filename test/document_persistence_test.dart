@@ -167,4 +167,43 @@ void main() {
     expect(loaded.layers, isEmpty);
     expect(loaded.error, isNull);
   });
+
+  test('flushTiles 只写瓦片，不重编码文档', () async {
+    final surface = surfaceWithDot();
+    final layer = DrawingLayer(id: 'l0', name: '位图', raster: surface);
+    await store.saveDocument('p1', [layer]);
+    expect(codec.encodeCount, 1);
+
+    // 再涂一块，然后只冲瓦片。
+    final buffer = surface.writableTile(1, 0);
+    buffer[0] = 255;
+    buffer[3] = 255;
+    expect(surface.dirtyTiles, isNotEmpty);
+
+    await store.flushTiles('p1', [layer]);
+
+    expect(codec.encodeCount, 1, reason: '像素落盘不该触发文档编码');
+    expect(
+      File('${projectDir.path}/tiles/0/1_0.png').existsSync(),
+      isTrue,
+      reason: '新瓦片应当已经写到磁盘',
+    );
+    expect(surface.dirtyTiles, isEmpty, reason: '落盘后脏标记要清掉');
+  });
+
+  test('瓦片比文档新时，加载仍然读得到像素', () async {
+    final surface = surfaceWithDot();
+    final layer = DrawingLayer(id: 'l0', name: '位图', raster: surface);
+    await store.saveDocument('p1', [layer]);
+
+    // 模拟「保存文档之后又画了几笔，并且这些瓦片已经即时落盘」。
+    final buffer = surface.writableTile(1, 0);
+    buffer[3] = 255;
+    await store.flushTiles('p1', [layer]);
+
+    final loaded = await store.loadDocument('p1');
+    final raster = loaded.layers.first.raster;
+    expect(raster, isNotNull);
+    expect(raster!.tile(1, 0), isNotNull, reason: '加载端以瓦片目录为准');
+  });
 }

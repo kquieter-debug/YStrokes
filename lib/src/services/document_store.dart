@@ -46,6 +46,20 @@ class DocumentStore {
   final DocumentCodec _codec;
   Directory? _resolvedRoot;
 
+  /// 写入串行化。
+  ///
+  /// [saveDocument] 与 [flushTiles] 都会读「脏瓦片 → 写文件 → 清脏标记」，
+  /// 两者交错会让其中一方读到已被对方清掉的脏集合，直接丢掉几次点击的内容。
+  /// 串起来执行的代价只是排队，而这里本来就没有并发的价值。
+  Future<void> _writeQueue = Future<void>.value();
+
+  Future<T> _serialize<T>(Future<T> Function() action) {
+    final next = _writeQueue.then((_) => action());
+    // 队列本身不能因为一次失败就断掉：后续写入仍然要能排上。
+    _writeQueue = next.then<void>((_) {}, onError: (Object _) {});
+    return next;
+  }
+
   /// 读取图层；文件不存在时返回空文档而非抛错（新建工程属正常情况）。
   ///
   /// 位图图层的像素不读文件就不存在，因此这里会逐层去瓦片目录取；
@@ -85,12 +99,44 @@ class DocumentStore {
     String projectId,
     List<DrawingLayer> layers,
   ) async {
-    final dir = await _dirFor(projectId);
-    await _persistTiles(dir, layers);
+    await _serialize(() async {
+      final dir = await _dirFor(projectId);
+      await _persistTiles(dir, layers);
 
-    final encoded = await _codec.encode(layers);
-    await writeBytes(projectId, encoded);
+      final encoded = await _codec.encode(layers);
+      await writeBytes(projectId, encoded);
+    });
   }
+
+  /// 只把脏瓦片落盘，**不写文档**。
+  ///
+  /// 像素笔画一抬手就调用它：崩溃时丢的只是正在画的那一笔，而不是整个自动
+  /// 保存窗口。文档（图层结构与位图尺寸）仍然由 [saveDocument] 负责——它要
+  /// 遍历全部笔画重新编码，没必要每笔都做一次。
+  ///
+  /// 加载端本来就以**瓦片目录**为准（[TileStore.loadTiles] 扫目录，而不是读
+  /// 文档里的瓦片清单），所以「瓦片比文档新」是安全的；反过来才会有问题。
+  Future<void> flushTiles(String projectId, List<DrawingLayer> layers) async {
+    await _serialize(() async {
+      final dir = await _dirFor(projectId);
+      for (var i = 0; i < layers.length; i++) {
+        final surface = layers[i].raster;
+        if (surface == null) continue;
+
+        final dirty = _dirtyPayload(surface);
+        if (dirty.isEmpty) continue;
+        await _tileStore.writeDirtyTiles(dir, i, dirty, surface.tileSize);
+        surface.clearDirty();
+      }
+    });
+  }
+
+  /// 当前脏瓦片的内容快照（跳过硬删除、取不到缓冲的键）。
+  Map<TileKey, Uint8List> _dirtyPayload(RasterSurface surface) => <TileKey, Uint8List>{
+        for (final key in surface.dirtyTiles)
+          if (surface.tile(key.$1, key.$2) != null)
+            key: surface.tile(key.$1, key.$2)!,
+      };
 
   /// 把每层位图的脏瓦片落盘，并清理已消失的瓦片与图层目录。
   Future<void> _persistTiles(Directory dir, List<DrawingLayer> layers) async {
@@ -98,17 +144,11 @@ class DocumentStore {
       final surface = layers[i].raster;
       if (surface == null) continue;
 
-      final dirty = surface.dirtyTiles;
-      final live = surface.liveTiles;
       await _tileStore.saveTiles(
         dir,
         i,
-        dirty: <TileKey, Uint8List>{
-          for (final key in dirty)
-            if (surface.tile(key.$1, key.$2) != null)
-              key: surface.tile(key.$1, key.$2)!,
-        },
-        live: live,
+        dirty: _dirtyPayload(surface),
+        live: surface.liveTiles,
         tileSize: surface.tileSize,
       );
       // 落盘成功后清脏：下次保存只写这次之后新涂的瓦片。
