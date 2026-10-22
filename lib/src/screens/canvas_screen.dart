@@ -25,6 +25,7 @@ import '../services/exporter.dart';
 import '../services/project_store.dart';
 import '../services/raster_brush.dart';
 import '../services/raster_mask.dart';
+import '../services/raster_mask_overlay.dart';
 import '../services/raster_patch.dart';
 import '../services/raster_renderer.dart';
 import '../services/raster_selection_session.dart';
@@ -36,6 +37,7 @@ import '../services/transform_geometry.dart';
 import '../services/transform_session.dart';
 import '../widgets/app_icon.dart';
 import '../widgets/layers_bubble.dart';
+import '../widgets/marching_ants.dart';
 import '../widgets/selection_bubble.dart';
 import '../widgets/selection_overlay.dart';
 import '../widgets/tool_settings_bubble.dart';
@@ -187,6 +189,16 @@ class _CanvasScreenState extends State<CanvasScreen>
   /// 是像素，两者的命中、变换与提交方式完全不同，硬合并只会让各自都变难。
   RasterMask? _rasterMask;
 
+  /// 像素选区的轮廓（归一化坐标）。
+  ///
+  /// 蒙版是一张像素表，画轮廓却需要折线：两者同源于套索点列，因此这里单独
+  /// 记一份多边形，平移时跟着一起走，避免每帧从蒙版里重新提边界
+  /// （那等于把选区边缘当成图做一次轮廓追踪，成本与周长×面积都相关）。
+  List<Offset>? _rasterOutline;
+
+  /// 选区外压暗的叠加图（快速蒙版效果），随 `AppSettings.rasterMaskDim` 开关。
+  ui.Image? _maskDimImage;
+
   /// 正在拖动的像素选区。只在拖动期间存在，抬手立即提交或还原。
   RasterSelectionSession? _rasterSelection;
 
@@ -318,8 +330,16 @@ class _CanvasScreenState extends State<CanvasScreen>
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _toolbarAnchor = AppSettings.toolbarAnchor.value ?? _defaultToolbarAnchor;
+    // 设置页改开关时画板可能仍挂着（比如返回上一页还没重建），
+    // 因此监听而不是只在 build 里读当前值。
+    AppSettings.rasterMaskDim.addListener(_onMaskDimChanged);
     _loadDocument();
     _loadToolProfiles();
+  }
+
+  void _onMaskDimChanged() {
+    if (!mounted || _rasterMask == null) return;
+    setState(_rebuildMaskDim);
   }
 
   /// 从 Rust 读取工具参数；失败时保留 [_fallbackProfiles]。
@@ -339,12 +359,14 @@ class _CanvasScreenState extends State<CanvasScreen>
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    AppSettings.rasterMaskDim.removeListener(_onMaskDimChanged);
     _saveTimer?.cancel();
     // dispose 无法 await：保存只依赖文件系统，不需要 Widget 存活。
     unawaited(_flushSave());
     _tileFlushTimer?.cancel();
     _committedPicture?.dispose();
     _disposeRasterFloatImage();
+    _maskDimImage?.dispose();
     super.dispose();
   }
 
@@ -466,7 +488,7 @@ class _CanvasScreenState extends State<CanvasScreen>
     // 结构变更（撤销 / 图层增删改序）之后，浮动内容指向的瓦片可能已经不属于
     // 任何图层——放弃它，由下面的整层失效负责把画面拉回真实状态。
     _cancelRasterSelection();
-    _rasterMask = null;
+    _clearRasterSelection();
 
     if (_session != null || _selectionPath != null) {
       setState(() {
@@ -746,6 +768,8 @@ class _CanvasScreenState extends State<CanvasScreen>
   }
 
   /// 丢弃这一笔（手势被系统打断）。像素已经写进 surface，必须换回快照。
+  ///
+  /// 用「接管」而不是换对象：换对象会让渲染缓存整体失效，整层闪一下。
   void _abortRasterStroke() {
     final before = _rasterBefore;
     _rasterBefore = null;
@@ -753,8 +777,8 @@ class _CanvasScreenState extends State<CanvasScreen>
     _rasterPainted = false;
     final surface = _engine.activeLayer.raster;
     if (before == null || surface == null) return;
-    _engine.activeLayer.raster = before;
-    _rasterRenderer.invalidateAll(before);
+    surface.adoptFrom(before);
+    _rasterRenderer.invalidateAll(surface);
     unawaited(_flushRaster());
     setState(() {});
   }
@@ -1159,6 +1183,10 @@ class _CanvasScreenState extends State<CanvasScreen>
           if (!_engine.flipLayer(layerId, horizontal: horizontal)) return;
           setState(() {});
           unawaited(_journal.clear(widget.project.id));
+          // 位图翻转换掉了整层瓦片的缓冲，缓存必须整体失效；
+          // 矢量层没有瓦片，这一步是空转。
+          _invalidateAllRaster();
+          _scheduleTileFlush();
           _scheduleSave();
         },
         onAddRaster: () {
@@ -1595,6 +1623,33 @@ class _CanvasScreenState extends State<CanvasScreen>
     return <Offset>[for (final point in points) _normalizedToLocal(point)];
   }
 
+  /// 像素选区的轮廓（本地坐标）。空列表表示没有选区可画。
+  ///
+  /// 每次 build 都重算：视口平移/缩放后它的屏幕位置会变。`MarchingAnts`
+  /// 内部按内容比较，因此这里重建列表不会导致它反复烘焙相位图。
+  List<Offset> _rasterOutlineLocal() {
+    final points = _rasterOutline;
+    if (points == null || points.length < 3) return const <Offset>[];
+    return <Offset>[for (final point in points) _normalizedToLocal(point)];
+  }
+
+  /// 拖动选区时轮廓要跟着内容走，这里给出**屏幕空间**的位移。
+  ///
+  /// 不把它加进 `_rasterOutlineLocal()`：那等于改了轮廓几何，`MarchingAnts`
+  /// 会因此每帧重建 8 张相位图。平移在绘制时施加，成本可以忽略。
+  Offset _rasterOutlineTranslation() {
+    final session = _rasterSelection;
+    if (session == null) return Offset.zero;
+    final surface = session.surface;
+    if (surface.width <= 0 || surface.height <= 0) return Offset.zero;
+    final delta = Offset(
+      session.transform.dx / surface.width,
+      session.transform.dy / surface.height,
+    );
+    // 归一化位移 → 屏幕位移：借一次同一套坐标换算，避免在这里重写视口数学。
+    return _normalizedToLocal(delta) - _normalizedToLocal(Offset.zero);
+  }
+
   /// 变换框四角（本地坐标）。空列表表示没有可画的框。
   List<Offset> _sessionCorners() {
     final session = _session;
@@ -1635,7 +1690,7 @@ class _CanvasScreenState extends State<CanvasScreen>
 
     // 圈新选区：旧浮动内容先落地，避免它跨手势挂着不提交。
     _commitRasterSelection();
-    _rasterMask = null;
+    _clearRasterSelection();
     _startLasso(local);
   }
 
@@ -1659,7 +1714,6 @@ class _CanvasScreenState extends State<CanvasScreen>
       // 源区域已被清空，整层瓦片都要重传。
       _rasterRenderer.invalidateAll(surface);
       unawaited(_flushRaster());
-      _showHint('拖动以移动选区内容');
     } else {
       _rasterDragBase = session.transform;
     }
@@ -1700,19 +1754,29 @@ class _CanvasScreenState extends State<CanvasScreen>
     if (surface == null || !identical(surface, session.surface)) return;
 
     if (!session.isMoved) {
-      _engine.activeLayer.raster = session.restoreTarget;
-      _rasterRenderer.invalidateAll(session.restoreTarget);
+      // 接管而不是换对象：换对象会让渲染缓存整体失效，整层闪一下。
+      surface.adoptFrom(session.restoreTarget);
+      _rasterRenderer.invalidateAll(surface);
       unawaited(_flushRaster());
       setState(() {});
       return;
     }
 
     final touched = session.commit();
-    // 选区跟着内容一起走，用户才能接着拖同一块。
-    _rasterMask = _rasterMask?.translated(
-      session.transform.dx.round(),
-      session.transform.dy.round(),
-    );
+    // 选区跟着内容一起走，用户才能接着拖同一块。蒙版与轮廓必须同步平移，
+    // 否则会出现「内容移了、框还在原地」的错位。
+    final shiftX = session.transform.dx.round();
+    final shiftY = session.transform.dy.round();
+    _rasterMask = _rasterMask?.translated(shiftX, shiftY);
+    final outline = _rasterOutline;
+    if (outline != null) {
+      final nx = shiftX / surface.width;
+      final ny = shiftY / surface.height;
+      _rasterOutline = <Offset>[
+        for (final point in outline) Offset(point.dx + nx, point.dy + ny),
+      ];
+    }
+    _rebuildMaskDim();
     _rasterRenderer.invalidateTiles(surface, touched);
     unawaited(_flushRaster());
     _engine.commitRasterStroke(session.before);
@@ -1731,9 +1795,10 @@ class _CanvasScreenState extends State<CanvasScreen>
     if (session == null) return;
 
     final layer = _engine.activeLayer;
-    if (!identical(layer.raster, session.surface)) return;
-    layer.raster = session.restoreTarget;
-    _rasterRenderer.invalidateAll(session.restoreTarget);
+    final surface = layer.raster;
+    if (surface == null || !identical(surface, session.surface)) return;
+    surface.adoptFrom(session.restoreTarget);
+    _rasterRenderer.invalidateAll(surface);
     unawaited(_flushRaster());
   }
 
@@ -1777,15 +1842,64 @@ class _CanvasScreenState extends State<CanvasScreen>
     ];
     final mask = RasterMask.fromPolygon(surface.width, surface.height, polygon);
     if (mask.isEmpty) {
-      _rasterMask = null;
+      _clearRasterSelection();
       _showHint('未选中像素');
       setState(() {});
       return;
     }
 
-    _rasterMask = mask;
-    _showHint('已选中 ${mask.selectedPixels.round()} 像素，拖动可移动');
+    // 选区本身在画面上看得见（流动虚线 + 选区外压暗），不再用提示条复述
+    // 「选了多少像素、可以拖动」：绘画时每次操作都弹一条横幅比没有反馈更烦人。
+    _applyRasterSelection(mask, points);
     setState(() {});
+  }
+
+  /// 建立/替换像素选区，并同步它的视觉表现。
+  void _applyRasterSelection(RasterMask mask, List<Offset> outline) {
+    _rasterMask = mask;
+    _rasterOutline = outline;
+    _rebuildMaskDim();
+  }
+
+  /// 清掉像素选区的状态与图像（换图层、撤销、重新圈选时调用）。
+  void _clearRasterSelection() {
+    _rasterMask = null;
+    _rasterOutline = null;
+    _maskDimImage?.dispose();
+    _maskDimImage = null;
+  }
+
+  /// 重建「选区外压暗」的叠加图。
+  ///
+  /// 只在选区变化或开关变化时做一次：降采样 + 解码都是毫秒级，
+  /// 但没必要每次重绘都来一遍。
+  void _rebuildMaskDim() {
+    final previous = _maskDimImage;
+    _maskDimImage = null;
+    previous?.dispose();
+
+    final mask = _rasterMask;
+    if (mask == null || !AppSettings.rasterMaskDim.value) return;
+
+    final overlay = buildMaskDimOverlay(mask);
+    if (overlay.width <= 0 || overlay.height <= 0) return;
+
+    final completer = Completer<ui.Image>();
+    ui.decodeImageFromPixels(
+      overlay.rgba,
+      overlay.width,
+      overlay.height,
+      ui.PixelFormat.rgba8888,
+      completer.complete,
+    );
+    unawaited(completer.future.then((image) {
+      // 解码期间选区可能已经变了：这张图没人要就扔掉。
+      if (!mounted || !identical(_rasterMask, mask)) {
+        image.dispose();
+        return;
+      }
+      setState(() => _maskDimImage = image);
+    }));
   }
 
   /// 构造给 `paintDocument` 的浮动内容。
@@ -2344,7 +2458,16 @@ class _CanvasScreenState extends State<CanvasScreen>
                   activeBlend: _engine.activeLayer.blendMode,
                   activePressure: _paintSettings.pressureEnabled,
                   rasterSource: _rasterRenderer,
+                  // 拖动期间不压暗：蒙版还停在原位，压暗区会与移动后的内容对不上，
+                  // 反而干扰判断。松手提交后蒙版与内容一起更新。
+                  maskDim: _rasterSelection == null ? _maskDimImage : null,
                 ),
+              ),
+              // 像素选区：流动虚线标边界（预烘焙相位，成本与面积无关）。
+              MarchingAnts(
+                points: _rasterOutlineLocal(),
+                translation: _rasterOutlineTranslation(),
+                color: theme.colorScheme.primary,
               ),
               // 选区与变换框画在内容之上、指针层之下：它们不参与命中，
               // 手势仍由外层 Listener 统一处理。
@@ -2424,6 +2547,7 @@ class _CanvasPainter extends CustomPainter {
     required this.activeBlend,
     required this.activePressure,
     required this.rasterSource,
+    this.maskDim,
   });
 
   final ui.Picture picture;
@@ -2446,6 +2570,26 @@ class _CanvasPainter extends CustomPainter {
   /// 位图图层的图像来源。只在「擦除中整篇重绘」这条路径上用到——
   /// 常规路径已经把位图画进 [picture] 缓存了。
   final RasterTileSource rasterSource;
+
+  /// 像素选区的「选区外压暗」叠加图（快速蒙版效果）。为空表示不压暗。
+  ///
+  /// 它是**显示层**而不是文档内容：不参与命中、不写入像素、不影响导出。
+  final ui.Image? maskDim;
+
+  /// 把选区之外的画面压暗。
+  ///
+  /// 压暗层是一张降采样的图（见 `buildMaskDimOverlay`），因此这里只有一次
+  /// `drawImageRect`——成本与选区面积无关，也不需要在每次改选区时重建画面缓存。
+  void _paintMaskDim(Canvas canvas) {
+    final image = maskDim;
+    if (image == null) return;
+    canvas.drawImageRect(
+      image,
+      Rect.fromLTWH(0, 0, image.width.toDouble(), image.height.toDouble()),
+      rect,
+      Paint()..filterQuality = FilterQuality.low,
+    );
+  }
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -2481,6 +2625,7 @@ class _CanvasPainter extends CustomPainter {
     }
 
     canvas.drawPicture(picture);
+    _paintMaskDim(canvas);
     if (activePoints.isEmpty) return;
 
     // 活动笔画要在视觉上「属于」当前图层：乘上该层的不透明度与混合模式。
@@ -2519,7 +2664,9 @@ class _CanvasPainter extends CustomPainter {
       oldDelegate.activeRevision != activeRevision ||
       oldDelegate.viewport != viewport ||
       oldDelegate.activeBlend != activeBlend ||
-      oldDelegate.activePressure != activePressure;
+      oldDelegate.activePressure != activePressure ||
+      // 压暗层换图（选区变化 / 开关切换）时必须重绘，否则会留着上一张。
+      oldDelegate.maskDim != maskDim;
 }
 
 /// 工具面板的尺寸方案：随屏幕短边自适应。

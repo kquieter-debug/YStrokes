@@ -9,6 +9,7 @@ import 'package:ystrokes/src/models/project.dart';
 import 'package:ystrokes/src/screens/canvas_screen.dart';
 import 'package:ystrokes/src/services/document_store.dart';
 import 'package:ystrokes/src/services/edit_journal.dart';
+import 'package:ystrokes/src/widgets/marching_ants.dart';
 
 /// 位图图层在画板这一层的行为：怎么建、怎么画、以及那些「明确不支持」的入口。
 ///
@@ -138,7 +139,7 @@ void main() {
     expect(canUndo(tester), isTrue, reason: '像素笔画必须产生撤销记录');
   });
 
-  testWidgets('位图图层上套索建立像素选区并给出面积提示', (tester) async {
+  testWidgets('位图图层上套索建立像素选区并画出流动虚线', (tester) async {
     await pumpCanvas(tester);
     await addRasterLayer(tester);
     await closeLayers(tester);
@@ -154,9 +155,11 @@ void main() {
     await gesture.up();
     await tester.pumpAndSettle();
 
-    // 位图选区的语义是像素蒙版，因此提示报的是选中面积而不是笔画数。
-    expect(find.textContaining('已选中'), findsOneWidget);
-    expect(find.textContaining('像素'), findsOneWidget);
+    // 选区靠轮廓与压暗表达，不再弹提示条。
+    expect(find.byType(MarchingAnts), findsOneWidget);
+    final ants = tester.widget<MarchingAnts>(find.byType(MarchingAnts));
+    expect(ants.points.length, greaterThanOrEqualTo(3), reason: '轮廓应有顶点');
+    expect(find.textContaining('已选中'), findsNothing, reason: '不再提示选中面积');
   });
 
   testWidgets('像素选区：圈住后拖动会移动内容，并且只产生一条撤销记录', (tester) async {
@@ -177,7 +180,10 @@ void main() {
     await lasso.moveTo(const Offset(100, 350));
     await lasso.up();
     await tester.pumpAndSettle();
-    expect(find.textContaining('已选中'), findsOneWidget);
+    expect(
+      tester.widget<MarchingAnts>(find.byType(MarchingAnts)).points.length,
+      greaterThanOrEqualTo(3),
+    );
     await clearNotices(tester);
 
     // 从选区内部拖动：这一步会把内容提起、并写到新位置。
@@ -218,7 +224,10 @@ void main() {
     await second.up();
     await tester.pumpAndSettle();
 
-    expect(find.textContaining('已选中'), findsOneWidget);
+    expect(
+      tester.widget<MarchingAnts>(find.byType(MarchingAnts)).points.length,
+      greaterThanOrEqualTo(3),
+    );
     // 只有「新建位图层 + 一笔」，重新圈选不该追加记录。
     expect(await undoAll(tester), 2);
   });
@@ -244,10 +253,15 @@ void main() {
     expect(find.textContaining('笔 ·'), findsWidgets);
   });
 
-  testWidgets('位图图层的翻转入口被置灰', (tester) async {
+  testWidgets('位图图层的翻转入口可用（像素置换）', (tester) async {
     await pumpCanvas(tester);
     await addRasterLayer(tester);
+    await closeLayers(tester);
+    await drawLine(tester, y: 300);
 
+    // 画完笔画面板已经关了，重新打开再点行内菜单。
+    await tester.tap(find.byTooltip('图层'));
+    await tester.pumpAndSettle();
     await tester.tap(find.byTooltip('图层操作').first);
     await tester.pumpAndSettle();
 
@@ -257,6 +271,14 @@ void main() {
         matching: find.byType(PopupMenuItem<String>),
       ),
     );
-    expect(flip.enabled, isFalse);
+    expect(flip.enabled, isTrue);
+
+    await tester.tap(find.text('水平翻转'));
+    await tester.pumpAndSettle();
+    // 面板还开着时它那道模态遮罩会吞掉第一次点击，先关掉再数撤销。
+    await closeLayers(tester);
+
+    // 翻转本身也是一步可撤销的编辑：建层 + 一笔 + 翻转 = 3。
+    expect(await undoAll(tester), 3);
   });
 }

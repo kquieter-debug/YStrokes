@@ -51,6 +51,22 @@ class SettingsSection extends StatelessWidget {
           ),
         ),
         SectionCard(
+          title: '选区',
+          child: ValueListenableBuilder<bool>(
+            valueListenable: AppSettings.rasterMaskDim,
+            builder: (context, value, _) => SwitchListTile(
+              contentPadding: EdgeInsets.zero,
+              title: const Text('压暗选区之外的画面'),
+              subtitle: const Text(
+                '像素图层上圈出选区后，选区外盖一层淡黑（类似快速蒙版）。'
+                '选区边界的流动虚线始终显示，不受此开关影响',
+              ),
+              value: value,
+              onChanged: AppSettings.setRasterMaskDim,
+            ),
+          ),
+        ),
+        SectionCard(
           title: '启动',
           child: ListTile(
             contentPadding: EdgeInsets.zero,

@@ -1,5 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:ystrokes/src/services/raster_mask.dart';
+import 'package:ystrokes/src/services/raster_mask_overlay.dart';
 import 'package:ystrokes/src/services/raster_patch.dart';
 import 'package:ystrokes/src/services/raster_surface.dart';
 
@@ -266,6 +267,47 @@ void main() {
       expect(rgba.length, 2 * 2 * 4);
       expect(rgba[3], 255);
       expect(rgba[0], 0x33);
+    });
+  });
+
+  group('选区外压暗', () {
+    test('选区外变暗，选区内保持透明', () {
+      final mask = rectMask(2, 2, 6, 6);
+      final overlay = buildMaskDimOverlay(mask, downscale: 1);
+
+      int alphaAt(int x, int y) => overlay.rgba[(y * overlay.width + x) * 4 + 3];
+
+      expect(alphaAt(0, 0), greaterThan(0), reason: '选区外应当压暗');
+      expect(alphaAt(4, 4), 0, reason: '选区内完全不压暗');
+    });
+
+    test('降采样后的尺寸向上取整', () {
+      final mask = rectMask(0, 0, 3, 3);
+      final overlay = buildMaskDimOverlay(mask, downscale: 2);
+      expect(overlay.width, (width / 2).ceil());
+      expect(overlay.height, (height / 2).ceil());
+      expect(overlay.rgba.length, overlay.width * overlay.height * 4);
+    });
+
+    test('强度决定最暗处的 alpha', () {
+      final mask = rectMask(0, 0, 1, 1);
+      final strong = buildMaskDimOverlay(mask, strength: 1.0, downscale: 1);
+      final weak = buildMaskDimOverlay(mask, strength: 0.1, downscale: 1);
+
+      // 取一个远离选区中心的像素。
+      int alphaAt(MaskDimOverlay o, int x, int y) =>
+          o.rgba[(y * o.width + x) * 4 + 3];
+
+      expect(alphaAt(strong, 7, 7), 255);
+      expect(alphaAt(weak, 7, 7), lessThan(40));
+    });
+
+    test('全选选区不产生任何压暗', () {
+      final mask = RasterMask.full(width, height);
+      final overlay = buildMaskDimOverlay(mask, downscale: 1);
+      for (var i = 3; i < overlay.rgba.length; i += 4) {
+        expect(overlay.rgba[i], 0);
+      }
     });
   });
 }

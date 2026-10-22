@@ -11,6 +11,7 @@ import '../models/export_destination.dart';
 /// 引入依赖注入不划算。
 abstract final class AppSettings {
   static const String _liveLayerReorderKey = 'live_layer_reorder';
+  static const String _rasterMaskDimKey = 'raster_mask_dim';
   static const String _toolbarXKey = 'canvas_toolbar_x';
   static const String _toolbarYKey = 'canvas_toolbar_y';
   static const String _exportDestinationKey = 'export_destination';
@@ -21,6 +22,13 @@ abstract final class AppSettings {
   /// 重绘。图层多、笔画重时，逐帧重建合成结果会明显掉帧，而拖动本身只需要
   /// 「看起来跟手」。
   static final ValueNotifier<bool> liveLayerReorder = ValueNotifier<bool>(false);
+
+  /// 像素选区是否把**选区之外**压暗（快速蒙版效果）。
+  ///
+  /// 默认开启：压暗让「哪一块被选中」在任何底色上都一眼可辨，比单靠一圈虚线清楚。
+  /// 但它会盖住画面的一部分细节，因此在设置里留了开关。
+  /// 选区的**流动虚线**不受这个开关影响，始终显示。
+  static final ValueNotifier<bool> rasterMaskDim = ValueNotifier<bool>(true);
 
   /// 画板工具栏的锚点位置。
   ///
@@ -41,6 +49,7 @@ abstract final class AppSettings {
   static Future<void> load() async {
     final prefs = await SharedPreferences.getInstance();
     liveLayerReorder.value = prefs.getBool(_liveLayerReorderKey) ?? false;
+    rasterMaskDim.value = prefs.getBool(_rasterMaskDimKey) ?? true;
 
     final x = prefs.getDouble(_toolbarXKey);
     final y = prefs.getDouble(_toolbarYKey);
@@ -55,6 +64,16 @@ abstract final class AppSettings {
     liveLayerReorder.value = value;
     final prefs = await SharedPreferences.getInstance();
     await prefs.setBool(_liveLayerReorderKey, value);
+  }
+
+  static Future<void> setRasterMaskDim(bool value) async {
+    rasterMaskDim.value = value;
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setBool(_rasterMaskDimKey, value);
+    } catch (_) {
+      // 偏好不可用：本次会话仍然生效，下次启动回默认。
+    }
   }
 
   /// 记住工具栏位置；传 `null` 表示恢复默认。

@@ -604,12 +604,14 @@ class _LayersPanelState extends State<LayersPanel> {
                       ),
                       PopupMenuItem<String>(
                         value: 'flip-h',
-                        enabled: layer.isVector && !layer.isEmpty,
+                        // 翻转对矢量与位图都成立：矢量烘焙点列，位图做像素置换，
+                        // 两者都是逐位精确的，不需要插值。
+                        enabled: !layer.isEmpty,
                         child: const Text('水平翻转'),
                       ),
                       PopupMenuItem<String>(
                         value: 'flip-v',
-                        enabled: layer.isVector && !layer.isEmpty,
+                        enabled: !layer.isEmpty,
                         child: const Text('垂直翻转'),
                       ),
                       PopupMenuItem<String>(

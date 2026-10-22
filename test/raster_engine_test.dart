@@ -197,13 +197,13 @@ void main() {
       expect(alphaAt(engine, 8, 8), 255);
     });
 
-    test('翻转位图图层被拒绝（像素翻转留给图层矩阵）', () {
+    test('翻转对位图图层成立（像素置换，不需要插值）', () {
       final engine = engineWithRaster();
       final before = engine.beginRasterStroke()!;
       paint(engine, 8, 8);
       engine.commitRasterStroke(before);
 
-      expect(engine.flipLayer(engine.activeLayerId, horizontal: true), isFalse);
+      expect(engine.flipLayer(engine.activeLayerId, horizontal: true), isTrue);
     });
 
     test('含位图图层时不允许向下合并', () {
@@ -284,6 +284,86 @@ void main() {
       expect(alphaOf(copy, 24, 24), 255, reason: '副本自己画上了');
       expect(alphaOf(source, 24, 24), 0, reason: '源图层不该被污染');
       expect(alphaOf(source, 8, 8), 255);
+    });
+  });
+
+  group('撤销与对象身份', () {
+    test('撤销像素笔画不换 surface 对象', () {
+      // 这是「撤销时整层闪一下」的回归点：换对象会让渲染缓存（按 surface
+      // 身份索引）整体失效，整层要等所有瓦片重新解码才画得出来。
+      final engine = engineWithRaster();
+      final surface = engine.activeLayer.raster!;
+
+      final before = engine.beginRasterStroke()!;
+      paint(engine, 8, 8);
+      expect(engine.commitRasterStroke(before), isTrue);
+
+      expect(engine.undo(), isTrue);
+
+      expect(
+        identical(engine.activeLayer.raster, surface),
+        isTrue,
+        reason: '撤销必须原地接管内容，而不是换一个新 surface',
+      );
+      expect(alphaAt(engine, 8, 8), 0, reason: '内容本身要真的回退');
+    });
+
+    test('重做同样不换对象，且重新带回这一笔', () {
+      final engine = engineWithRaster();
+      final surface = engine.activeLayer.raster!;
+
+      final before = engine.beginRasterStroke()!;
+      paint(engine, 10, 10);
+      engine.commitRasterStroke(before);
+      engine.undo();
+      expect(engine.redo(), isTrue);
+
+      expect(identical(engine.activeLayer.raster, surface), isTrue);
+      expect(alphaAt(engine, 10, 10), 255);
+    });
+
+    test('取消像素笔画也原地复原', () {
+      final engine = engineWithRaster();
+      final surface = engine.activeLayer.raster!;
+
+      final before = engine.beginRasterStroke()!;
+      paint(engine, 12, 12);
+      // 不提交，直接把快照接管回来（画板的 _abortRasterStroke 走的就是这条）。
+      surface.adoptFrom(before);
+
+      expect(alphaAt(engine, 12, 12), 0);
+      // 栈里只剩「新建位图层」那一条，取消本身没有入栈。
+      expect(engine.undo(), isTrue);
+      expect(engine.canUndo, isFalse, reason: '取消不该留下撤销记录');
+    });
+  });
+
+  group('位图图层翻转', () {
+    test('水平翻转是像素置换，可撤销', () {
+      final engine = engineWithRaster();
+      paint(engine, 4, 16);
+
+      expect(engine.flipLayer(engine.activeLayerId, horizontal: true), isTrue);
+      expect(alphaAt(engine, 4, 16), 0, reason: '原位置应当空掉');
+      expect(alphaAt(engine, width - 1 - 4, 16), greaterThan(0));
+
+      expect(engine.undo(), isTrue);
+      expect(alphaAt(engine, 4, 16), greaterThan(0), reason: '撤销回到原位');
+    });
+
+    test('垂直翻转只改 y', () {
+      final engine = engineWithRaster();
+      paint(engine, 8, 4);
+
+      expect(engine.flipLayer(engine.activeLayerId, horizontal: false), isTrue);
+      expect(alphaAt(engine, 8, 4), 0);
+      expect(alphaAt(engine, 8, height - 1 - 4), greaterThan(0));
+    });
+
+    test('空位图图层翻转返回 false 且不入栈', () {
+      final engine = engineWithRaster();
+      expect(engine.flipLayer(engine.activeLayerId, horizontal: true), isFalse);
+      expect(engine.canUndo, isTrue, reason: '只剩新建图层那一条');
     });
   });
 }

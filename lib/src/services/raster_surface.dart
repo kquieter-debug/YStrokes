@@ -209,10 +209,19 @@ class RasterSurface {
       height: height,
       tileSize: tileSize,
     );
+    surface._fillFromPixels(rgba);
+    return surface;
+  }
+
+  /// 按网格切分整层像素，写入瓦片表（全透明瓦片跳过）。
+  ///
+  /// [fromPixels] 与 [replacePixels] 共用这里，避免「工厂」和「原地替换」
+  /// 各写一套切分逻辑——两者的差异只在对象是新造的还是复用的。
+  void _fillFromPixels(Uint8List rgba) {
     final stride = width * bytesPerPixel;
 
-    for (var ty = 0; ty < surface.rows; ty++) {
-      for (var tx = 0; tx < surface.columns; tx++) {
+    for (var ty = 0; ty < rows; ty++) {
+      for (var tx = 0; tx < columns; tx++) {
         final x0 = tx * tileSize;
         final y0 = ty * tileSize;
         final w = (width - x0).clamp(0, tileSize);
@@ -232,7 +241,7 @@ class RasterSurface {
         }
         if (!opaque) continue;
 
-        final dst = surface.writableTile(tx, ty);
+        final dst = writableTile(tx, ty);
         for (var row = 0; row < h; row++) {
           final srcStart = (y0 + row) * stride + x0 * bytesPerPixel;
           dst.setRange(
@@ -244,7 +253,6 @@ class RasterSurface {
         }
       }
     }
-    return surface;
   }
 
   /// 生成一份可写入的快照：像素共享，写入时才分裂。
@@ -261,8 +269,45 @@ class RasterSurface {
     return shadow;
   }
 
-  /// 从「瓦片坐标 → 像素缓冲」构造（加载磁盘时用）。
+  /// 把另一份快照的内容**接管**到本对象上，保持对象身份不变。
   ///
+  /// 撤销 / 重做 / 取消浮动选区都是「换回之前的内容」。如果换的是对象本身
+  /// （`layer.raster = before`），渲染层的缓存按对象身份索引就会整体失效，
+  /// 整层要等所有瓦片重新解码才画得出来——表现为撤销时整层闪一下。
+  /// 接管只替换瓦片表，对象身份不变，缓存继续命中，旧图在解码期间照常显示。
+  ///
+  /// 接管之后**双方都放弃所有权**（与 [fork] 同一条规则）：谁写谁先拷贝一份，
+  /// 快照不会被后续笔画污染。
+  void adoptFrom(RasterSurface other) {
+    assert(sameShapeAs(other), '接管要求尺寸与瓦片网格一致');
+    _tiles
+      ..clear()
+      ..addAll(other._tiles);
+    _owned.clear();
+    other._owned.clear();
+    // 内容整体换了，无法推断哪块与磁盘不同，只能全量重写。
+    _dirty
+      ..clear()
+      ..addAll(_tiles.keys);
+  }
+
+  /// 用整层像素替换内容（整层几何变换用）。
+  ///
+  /// 与 [adoptFrom] 一样保持对象身份：渲染缓存因此不会整体失效。
+  /// 全透明瓦片会被丢弃，与 [RasterSurface.fromPixels] 的规则一致。
+  void replacePixels(Uint8List rgba) {
+    assert(
+      rgba.length == width * height * bytesPerPixel,
+      '整层像素长度应为 ${width * height * bytesPerPixel}',
+    );
+    _tiles.clear();
+    _owned.clear();
+    _dirty.clear();
+    _fillFromPixels(rgba);
+    _dirty.addAll(_tiles.keys);
+  }
+
+  /// 从「瓦片坐标 → 像素缓冲」构造（加载磁盘时用）。
   /// 尺寸不符的缓冲会被跳过：PNG 文件被外部改动过时，宁可让那一块变透明，
   /// 也不要让一张 64×64 的图混进 256×256 的网格里越界读写。
   factory RasterSurface.fromTiles({

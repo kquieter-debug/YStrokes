@@ -7,6 +7,7 @@ import '../models/stroke.dart';
 import '../rust/api/stroke.dart' as rust;
 import '../rust/api/tools.dart';
 import 'raster_surface.dart';
+import 'raster_transform.dart';
 import 'transform_geometry.dart';
 
 /// 画板引擎：管理图层、笔画与撤销/重做栈。
@@ -465,7 +466,11 @@ class DrawingEngine {
   /// 现阶段宁可明确「不支持」，也不做半吊子的点集翻转。
   bool flipLayer(String layerId, {required bool horizontal}) {
     final layer = _layerById(layerId);
-    if (layer == null || layer.isRaster || layer.strokes.isEmpty) return false;
+    if (layer == null) return false;
+    // 位图的翻转是像素置换，与矢量的点列烘焙互不相干，分开实现（ADR-027 的
+    // 「不隐式栅格化」说的是方向问题，不是禁止位图有自己的几何操作）。
+    if (layer.isRaster) return _flipRasterLayer(layer, horizontal: horizontal);
+    if (layer.strokes.isEmpty) return false;
 
     final before = List<Stroke>.of(layer.strokes);
     final after = transformStrokes(
@@ -477,6 +482,19 @@ class DrawingEngine {
       ..clear()
       ..addAll(after);
     _pushEdit(_ReplaceStrokesEdit(layerId, before, after));
+    _revision++;
+    return true;
+  }
+
+  /// 位图图层的翻转：像素置换 + 一条「前后快照」撤销记录。
+  bool _flipRasterLayer(DrawingLayer layer, {required bool horizontal}) {
+    final surface = layer.raster;
+    if (surface == null || surface.isEmpty) return false;
+
+    final before = surface.fork();
+    RasterTransform.flip(surface, horizontal: horizontal);
+    // 冻结结果：活对象当 after，后续笔画会把它一起改掉。
+    _pushEdit(_ReplaceRasterEdit(layer.id, before, surface.fork()));
     _revision++;
     return true;
   }
@@ -698,18 +716,32 @@ class _ReplaceRasterEdit implements _Edit {
   void undo(DrawingEngine engine) {
     final layer = engine._layerById(layerId);
     if (layer == null) return;
-    layer.raster = before;
-    // 换回旧内容后，磁盘上的像素与内存不一致且无法推断差在哪：
-    // 全量重写是唯一安全的选择。
-    before.markAllDirty();
+    _restore(layer, before);
   }
 
   @override
   void redo(DrawingEngine engine) {
     final layer = engine._layerById(layerId);
     if (layer == null) return;
-    layer.raster = after;
-    after.markAllDirty();
+    _restore(layer, after);
+  }
+
+  /// 把内容换回 [target]。
+  ///
+  /// **优先接管而不是换对象**：换对象会让渲染缓存（按 surface 身份索引）整体
+  /// 失效，整层要等所有瓦片重新解码才画得出来——那就是撤销时看到的整层闪烁。
+  /// 接管只替换瓦片表，缓存继续命中，旧图在解码期间照常显示。
+  ///
+  /// 形状不一致（图层被栅格化成别的尺寸）时只能换对象，此时也没有缓存可复用。
+  void _restore(DrawingLayer layer, RasterSurface target) {
+    final surface = layer.raster;
+    if (surface != null && surface.sameShapeAs(target)) {
+      surface.adoptFrom(target);
+    } else {
+      layer.raster = target;
+      // 换对象后磁盘上的像素与内存不一致且无法推断差在哪，只能全量重写。
+      target.markAllDirty();
+    }
   }
 }
 
