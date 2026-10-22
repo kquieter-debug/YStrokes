@@ -59,4 +59,41 @@ void main() {
     expect(loaded.single.id, 'ok');
   });
 
+
+  test('删除只是移入回收站，恢复后回到列表', () async {
+    final store = ProjectStore();
+    final project = await store.createProject('速写', spec);
+
+    await store.deleteProject(project.id);
+    expect(await store.loadProjects(), isEmpty, reason: '列表不含回收站');
+    expect(await store.loadTrashedProjects(), hasLength(1));
+
+    await store.restoreProject(project.id);
+    expect(await store.loadProjects(), hasLength(1));
+    expect(await store.loadTrashedProjects(), isEmpty);
+  });
+
+  test('彻底删除只移除索引，文件由调用方清理', () async {
+    final store = ProjectStore();
+    final project = await store.createProject('速写', spec);
+    await store.deleteProject(project.id);
+
+    await store.purgeProject(project.id);
+
+    expect(await store.loadTrashedProjects(), isEmpty);
+    expect(await store.loadProjects(includeTrashed: true), isEmpty);
+  });
+
+  test('重复删除与恢复不产生副作用', () async {
+    final store = ProjectStore();
+    final project = await store.createProject('速写', spec);
+
+    await store.deleteProject(project.id);
+    await store.deleteProject(project.id);
+    expect(await store.loadTrashedProjects(), hasLength(1));
+
+    await store.restoreProject(project.id);
+    await store.restoreProject(project.id);
+    expect(await store.loadProjects(), hasLength(1));
+  });
 }

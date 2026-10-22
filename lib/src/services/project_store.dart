@@ -12,8 +12,11 @@ import '../models/project.dart';
 class ProjectStore {
   static const String _projectsKey = 'projects';
 
-  /// 按更新时间倒序加载全部工程。
-  Future<List<DrawingProject>> loadProjects() async {
+  /// 按更新时间倒序加载工程。
+  ///
+  /// 默认不含回收站里的条目：已删除的工程不该出现在首页，但它们仍在索引里，
+  /// 这样「恢复」不需要去扫描文件系统。
+  Future<List<DrawingProject>> loadProjects({bool includeTrashed = false}) async {
     final prefs = await SharedPreferences.getInstance();
     final raw = prefs.getString(_projectsKey);
     if (raw == null || raw.isEmpty) return <DrawingProject>[];
@@ -28,8 +31,20 @@ class ProjectStore {
         // 一条坏数据不应该让用户整个工程列表都打不开。
       }
     }
-    projects.sort((a, b) => b.updatedAt.compareTo(a.updatedAt));
-    return projects;
+    final visible = includeTrashed
+        ? projects
+        : projects.where((project) => !project.isTrashed).toList();
+    visible.sort((a, b) => b.updatedAt.compareTo(a.updatedAt));
+    return visible;
+  }
+
+  /// 回收站内容，按删除时间倒序。
+  Future<List<DrawingProject>> loadTrashedProjects() async {
+    final all = await loadProjects(includeTrashed: true);
+    final trashed =
+        all.where((project) => project.isTrashed).toList(growable: false);
+    trashed.sort((a, b) => b.deletedAt!.compareTo(a.deletedAt!));
+    return trashed;
   }
 
   Future<void> saveProjects(List<DrawingProject> projects) async {
@@ -71,14 +86,33 @@ class ProjectStore {
     await saveProjects(projects);
   }
 
-  /// 从索引中移除工程。
+  /// 移入回收站（软删除）。
   ///
-  /// 只负责元数据；对应的笔画文件由 `DocumentStore.deleteStrokes` 清理——
-  /// 两处存储分离，删除也需要分两步执行。
+  /// 不删文件：删除是绘画应用里唯一不可接受的失败，而一份笔画的体积很小。
+  /// 真正的清理发生在 [purgeProject]。
   Future<void> deleteProject(String id) async {
-    final projects = await loadProjects();
+    final projects = await loadProjects(includeTrashed: true);
+    final index = projects.indexWhere((project) => project.id == id);
+    if (index == -1) return;
+    if (projects[index].isTrashed) return;
+    projects[index] = projects[index].copyWith(deletedAt: DateTime.now());
+    await saveProjects(projects);
+  }
+
+  /// 从回收站恢复。
+  Future<void> restoreProject(String id) async {
+    final projects = await loadProjects(includeTrashed: true);
+    final index = projects.indexWhere((project) => project.id == id);
+    if (index == -1 || !projects[index].isTrashed) return;
+    projects[index] = projects[index].copyWith(restore: true);
+    await saveProjects(projects);
+  }
+
+  /// 彻底删除：只从索引移除，文件由调用方（`DocumentStore.deleteStrokes`）清理。
+  Future<void> purgeProject(String id) async {
+    final projects = await loadProjects(includeTrashed: true);
     final before = projects.length;
-    projects.removeWhere((p) => p.id == id);
+    projects.removeWhere((project) => project.id == id);
     if (projects.length == before) return;
     await saveProjects(projects);
   }

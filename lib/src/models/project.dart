@@ -8,12 +8,21 @@ class DrawingProject {
     required this.createdAt,
     required this.updatedAt,
     required this.document,
+    this.deletedAt,
   });
 
   final String id;
   final String name;
   final DateTime createdAt;
   final DateTime updatedAt;
+
+  /// 移入回收站的时刻；为空表示工程仍在列表中。
+  ///
+  /// 「删除」只打这个标记、不动文件：作品丢失是绘画应用里最不可接受的失败，
+  /// 而一份笔画的体积远小于一张照片，留着比删掉更划算。彻底删除要用户再点一次。
+  final DateTime? deletedAt;
+
+  bool get isTrashed => deletedAt != null;
 
   /// 文档规格（像素尺寸、分辨率、底色）。
   ///
@@ -51,6 +60,7 @@ class DrawingProject {
         'createdAt': createdAt.toIso8601String(),
         'updatedAt': updatedAt.toIso8601String(),
         'document': document.toJson(),
+        if (deletedAt != null) 'deletedAt': deletedAt!.toIso8601String(),
       };
 
   /// 从持久化 JSON 还原。
@@ -69,6 +79,9 @@ class DrawingProject {
       createdAt: DateTime.parse(json['createdAt'] as String),
       updatedAt: DateTime.parse(json['updatedAt'] as String),
       document: DocumentSpec.fromJson(rawDocument),
+      deletedAt: json['deletedAt'] is String
+          ? DateTime.tryParse(json['deletedAt'] as String)
+          : null,
     );
   }
 
@@ -76,6 +89,8 @@ class DrawingProject {
     String? name,
     DateTime? updatedAt,
     DocumentSpec? document,
+    DateTime? deletedAt,
+    bool restore = false,
   }) =>
       DrawingProject(
         id: id,
@@ -83,5 +98,8 @@ class DrawingProject {
         createdAt: createdAt,
         updatedAt: updatedAt ?? this.updatedAt,
         document: document ?? this.document,
+        // `restore: true` 才能把标记清空——`deletedAt ?? this.deletedAt` 无法表达
+        // 「显式置 null」，这是 copyWith 处理可空字段的经典陷阱。
+        deletedAt: restore ? null : (deletedAt ?? this.deletedAt),
       );
 }

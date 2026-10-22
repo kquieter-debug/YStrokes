@@ -43,6 +43,7 @@ class _HomeScreenState extends State<HomeScreen> {
   final Map<String, Uint8List> _thumbnails = <String, Uint8List>{};
 
   bool _loading = true;
+  int _trashCount = 0;
   HomeSection _section = HomeSection.projects;
 
   @override
@@ -53,9 +54,11 @@ class _HomeScreenState extends State<HomeScreen> {
 
   Future<void> _reload() async {
     final projects = await _store.loadProjects();
+    final trashed = await _store.loadTrashedProjects();
     if (!mounted) return;
     setState(() {
       _projects = projects;
+      _trashCount = trashed.length;
       _thumbnails.clear();
       _loading = false;
     });
@@ -174,7 +177,10 @@ class _HomeScreenState extends State<HomeScreen> {
     await _reload();
   }
 
-  /// 删除前的二次确认。删除不可撤销，因此必须显式确认。
+  /// 删除前的二次确认。
+  ///
+  /// 删除实际上只是「移入回收站」，但确认文案仍然保留：一步误触就把作品从列表里
+  /// 移走，即使能恢复也会让人慌乱。
   Future<void> _confirmDelete(DrawingProject project) async {
     final confirmed = await showDialog<bool>(
       context: context,
@@ -182,7 +188,7 @@ class _HomeScreenState extends State<HomeScreen> {
         final scheme = Theme.of(dialogContext).colorScheme;
         return AlertDialog(
           title: const Text('删除工程'),
-          content: const Text('确认删除吗？该操作不可回退！'),
+          content: const Text('将移入回收站，之后可以恢复。'),
           actions: [
             TextButton(
               onPressed: () => Navigator.of(dialogContext).pop(false),
@@ -203,20 +209,140 @@ class _HomeScreenState extends State<HomeScreen> {
 
     if (confirmed != true || !mounted) return;
 
-    // 先删索引、再删文件。若顺序相反且索引删除失败，用户会看到「工程还在但内容
-    // 已经空了」，那是更坏的结果；反之文件清理失败只会留下一个无用目录。
+    // 只标记、不删文件：真正清理留给回收站，这是「不丢作品」的最后一道闸。
     await _store.deleteProject(project.id);
-    try {
-      await _documentStore.deleteStrokes(project.id);
-    } catch (_) {
-      // 文件清理是尽力而为，不应阻塞删除流程。
-    }
     if (!mounted) return;
     await _reload();
     if (!mounted) return;
     _messengerKey.currentState
       ?..hideCurrentSnackBar()
-      ..showSnackBar(SnackBar(content: Text('已删除「${project.name}」')));
+      ..showSnackBar(
+        SnackBar(
+          content: Text('已移入回收站：${project.name}'),
+          // 提示条自带撤销：误删最常见的时间点就是刚点完的那几秒。
+          action: SnackBarAction(
+            label: '撤销',
+            onPressed: () => unawaited(_restore(project.id)),
+          ),
+        ),
+      );
+  }
+
+  Future<void> _restore(String id) async {
+    await _store.restoreProject(id);
+    if (!mounted) return;
+    await _reload();
+  }
+
+  /// 回收站：列出已删除工程，可恢复或彻底删除。
+  Future<void> _openTrash() async {
+    final trashed = await _store.loadTrashedProjects();
+    if (!mounted) return;
+
+    await showDialog<void>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('回收站'),
+        content: SizedBox(
+          width: 360,
+          child: trashed.isEmpty
+              ? const Text('回收站是空的')
+              : SingleChildScrollView(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      for (final project in trashed)
+                        ListTile(
+                          contentPadding: EdgeInsets.zero,
+                          title: Text(project.name),
+                          subtitle: Text(
+                            '删除于 ${_formatDeletedAt(project.deletedAt!)}',
+                            style: Theme.of(dialogContext).textTheme.bodySmall,
+                          ),
+                          trailing: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              TextButton(
+                                key: Key('restore-${project.id}'),
+                                onPressed: () async {
+                                  Navigator.of(dialogContext).pop();
+                                  await _restore(project.id);
+                                },
+                                child: const Text('恢复'),
+                              ),
+                              TextButton(
+                                key: Key('purge-${project.id}'),
+                                onPressed: () async {
+                                  Navigator.of(dialogContext).pop();
+                                  await _purge(project);
+                                },
+                                style: TextButton.styleFrom(
+                                  foregroundColor:
+                                      Theme.of(dialogContext).colorScheme.error,
+                                ),
+                                child: const Text('彻底删除'),
+                              ),
+                            ],
+                          ),
+                        ),
+                    ],
+                  ),
+                ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(),
+            child: const Text('关闭'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// 彻底删除：索引与文件一起清掉，不可恢复。
+  Future<void> _purge(DrawingProject project) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('彻底删除'),
+        content: Text('「${project.name}」及其全部笔画将被永久删除，无法恢复。'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            key: const Key('purge-confirm'),
+            style: FilledButton.styleFrom(
+              backgroundColor: Theme.of(dialogContext).colorScheme.error,
+              foregroundColor: Theme.of(dialogContext).colorScheme.onError,
+            ),
+            onPressed: () => Navigator.of(dialogContext).pop(true),
+            child: const Text('永久删除'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+
+    // 先改索引、再刷新界面、最后清文件。
+    // 顺序的理由：索引是「用户看到什么」的真相，刷新得越早越好；而删目录是
+    // 真实 IO（上百毫秒），排在它后面不会被误认为「点了没反应」。
+    await _store.purgeProject(project.id);
+    if (!mounted) return;
+    await _reload();
+    try {
+      await _documentStore.deleteStrokes(project.id);
+    } catch (_) {
+      // 清文件失败只会留下一个不可见的空目录，不影响列表与后续使用。
+    }
+  }
+
+  String _formatDeletedAt(DateTime time) {
+    final local = time.toLocal();
+    String two(int value) => value.toString().padLeft(2, '0');
+    return '${local.year}-${two(local.month)}-${two(local.day)} '
+        '${two(local.hour)}:${two(local.minute)}';
   }
 
   @override
@@ -229,7 +355,10 @@ class _HomeScreenState extends State<HomeScreen> {
           bottom: false,
           child: Column(
             children: [
-              const _HomeHeader(),
+              _HomeHeader(
+                trashCount: _trashCount,
+                onOpenTrash: _openTrash,
+              ),
               Expanded(
                 child: Stack(
                   children: [
@@ -315,7 +444,10 @@ class _HomeScreenState extends State<HomeScreen> {
 /// 标题右侧的应用图标目前是占位资源（`assets/icons/app_logo.svg`），
 /// 后续替换该文件即可，无需改动代码。
 class _HomeHeader extends StatelessWidget {
-  const _HomeHeader();
+  const _HomeHeader({required this.trashCount, required this.onOpenTrash});
+
+  final int trashCount;
+  final VoidCallback onOpenTrash;
 
   @override
   Widget build(BuildContext context) {
@@ -338,6 +470,15 @@ class _HomeHeader extends StatelessWidget {
             color: theme.colorScheme.primary,
             semanticLabel: '应用图标占位',
           ),
+          const Spacer(),
+          // 回收站入口只在有内容时出现：空的时候摆一个图标只会让人好奇点进去。
+          if (trashCount > 0)
+            TextButton.icon(
+              key: const Key('open-trash'),
+              onPressed: onOpenTrash,
+              icon: const Icon(Icons.delete_outline, size: 18),
+              label: Text('回收站 $trashCount'),
+            ),
         ],
       ),
     );

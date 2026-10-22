@@ -102,7 +102,7 @@ void main() {
     await tester.tap(find.text('删除'));
     await tester.pumpAndSettle();
 
-    expect(find.text('确认删除吗？该操作不可回退！'), findsOneWidget);
+    expect(find.text('将移入回收站，之后可以恢复。'), findsOneWidget);
     expect(find.text('取消'), findsOneWidget);
     expect(find.text('确认'), findsOneWidget);
   });
@@ -117,7 +117,7 @@ void main() {
     await tester.tap(find.text('取消'));
     await tester.pumpAndSettle();
 
-    expect(find.text('确认删除吗？该操作不可回退！'), findsNothing);
+    expect(find.text('将移入回收站，之后可以恢复。'), findsNothing);
     expect(find.text('测试工程'), findsOneWidget);
   });
 
@@ -185,5 +185,65 @@ void main() {
       findsOneWidget,
       reason: '画板应持有自己的 messenger，路由销毁时提示随之销毁',
     );
+  });
+
+  testWidgets('删除只是移入回收站，可恢复', (tester) async {
+    await pumpHome(tester, const Size(400, 800));
+
+    await tester.longPress(find.text('测试工程'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('删除'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('确认'));
+    await tester.pumpAndSettle();
+
+    // 列表里消失，但回收站入口出现（说明索引里仍然留着）。
+    expect(find.text('测试工程'), findsNothing);
+    expect(find.byKey(const Key('open-trash')), findsOneWidget);
+
+    await tester.tap(find.byKey(const Key('open-trash')));
+    await tester.pumpAndSettle();
+    expect(find.text('回收站'), findsOneWidget);
+
+    await tester.tap(find.byKey(const Key('restore-p1')));
+    await tester.pumpAndSettle();
+
+    expect(find.text('测试工程'), findsOneWidget, reason: '恢复后回到列表');
+    expect(find.byKey(const Key('open-trash')), findsNothing, reason: '回收站已空');
+  });
+
+  testWidgets('彻底删除需要二次确认', (tester) async {
+    await pumpHome(tester, const Size(400, 800));
+
+    await tester.longPress(find.text('测试工程'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('删除'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('确认'));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byKey(const Key('open-trash')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('purge-p1')));
+    await tester.pumpAndSettle();
+
+    expect(find.text('永久删除'), findsOneWidget, reason: '必须再确认一次');
+    await tester.tap(find.byKey(const Key('purge-confirm')));
+    await tester.pumpAndSettle();
+    // 清文件是真实 IO，假时钟不会推进它；等它跑完再断言列表刷新。
+    await tester.runAsync(
+      () => Future<void>.delayed(const Duration(milliseconds: 120)),
+    );
+    await tester.pumpAndSettle();
+
+    // 条目与回收站入口都消失（文件清理在 project_store_test 里单独验证，
+    // 那里没有假时钟，能真正 await 到删除完成）。
+    expect(find.text('测试工程'), findsNothing);
+    expect(find.byKey(const Key('open-trash')), findsNothing);
+  });
+
+  testWidgets('回收站为空时不显示入口', (tester) async {
+    await pumpHome(tester, const Size(400, 800));
+    expect(find.byKey(const Key('open-trash')), findsNothing);
   });
 }
