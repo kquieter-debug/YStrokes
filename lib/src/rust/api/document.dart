@@ -8,8 +8,8 @@ import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 import 'stroke.dart';
 import 'tools.dart';
 
-// These functions are ignored because they are not marked as `pub`: `decode_layers`, `read_f32`, `read_stroke`, `read_u16`, `read_u32`, `stroke_header_len`
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`
+// These functions are ignored because they are not marked as `pub`: `decode_layers`, `is_sane`, `read_f32`, `read_raster_payload`, `read_stroke`, `read_u16`, `read_u32`, `read_vector_payload`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`
 
 /// 把图层序列编码为字节流，供前端原子写入磁盘。
 Future<Uint8List> encodeDocument({required List<Layer> layers}) =>
@@ -44,6 +44,9 @@ class DecodeOutcome {
 /// 一个图层。
 ///
 /// 图层顺序即绘制顺序：索引 0 在最底层。
+///
+/// **不变量**：`raster.is_some()` 的图层 `strokes` 必须为空。两种内容不会同时存在
+/// （方案 C 混合层已明确不做），因此「图层类型」不需要额外的字段。
 class Layer {
   final String name;
 
@@ -55,7 +58,12 @@ class Layer {
 
   /// 与下方图层内容的混合方式。
   final LayerBlendMode blendMode;
+
+  /// 矢量内容；位图图层恒为空。
   final List<Stroke> strokes;
+
+  /// 位图内容；矢量图层为 `None`。
+  final RasterInfo? raster;
 
   const Layer({
     required this.name,
@@ -63,11 +71,24 @@ class Layer {
     required this.visible,
     required this.blendMode,
     required this.strokes,
+    this.raster,
   });
+
+  Future<LayerKind> kind() =>
+      RustLib.instance.api.crateApiDocumentLayerKind(that: this);
 
   // HINT: Make it `#[frb(sync)]` to let it become the default constructor of Dart class.
   static Future<Layer> newInstance({required String name}) =>
       RustLib.instance.api.crateApiDocumentLayerNew(name: name);
+
+  /// 新建位图图层：不带任何瓦片，等于一张全透明画布。
+  static Future<Layer> rasterLayer({
+    required String name,
+    required RasterInfo info,
+  }) => RustLib.instance.api.crateApiDocumentLayerRasterLayer(
+    name: name,
+    info: info,
+  );
 
   @override
   int get hashCode =>
@@ -75,7 +96,8 @@ class Layer {
       opacity.hashCode ^
       visible.hashCode ^
       blendMode.hashCode ^
-      strokes.hashCode;
+      strokes.hashCode ^
+      raster.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -86,7 +108,8 @@ class Layer {
           opacity == other.opacity &&
           visible == other.visible &&
           blendMode == other.blendMode &&
-          strokes == other.strokes;
+          strokes == other.strokes &&
+          raster == other.raster;
 }
 
 /// 图层混合模式。
@@ -114,4 +137,86 @@ enum LayerBlendMode {
 
   Future<int> toCode() =>
       RustLib.instance.api.crateApiDocumentLayerBlendModeToCode(that: this);
+}
+
+/// 图层内容的类型。
+///
+/// 不落成图层上的独立字段，而是由 `Layer::raster` 是否为空推导——
+/// 两个字段表达同一件事时，总会出现「声明的类型与载荷不一致」的中间态。
+enum LayerKind {
+  vector,
+  raster;
+
+  /// 未知编码按矢量处理：与混合模式一样，只针对单字节损坏做容错。
+  static Future<LayerKind> fromCode({required int code}) =>
+      RustLib.instance.api.crateApiDocumentLayerKindFromCode(code: code);
+
+  Future<int> toCode() =>
+      RustLib.instance.api.crateApiDocumentLayerKindToCode(that: this);
+}
+
+/// 位图图层的尺寸与瓦片清单。
+///
+/// 位图尺寸恒等于文档尺寸（D1：不做超采样），`tile_size` 决定网格划分，
+/// `tiles` 只列「真的写过像素」的那些瓦片——空白瓦片不占磁盘也不占内存。
+class RasterInfo {
+  final int width;
+  final int height;
+  final int tileSize;
+  final List<TileRef> tiles;
+
+  const RasterInfo({
+    required this.width,
+    required this.height,
+    required this.tileSize,
+    required this.tiles,
+  });
+
+  /// 横向/纵向各需要多少块瓦片（至少 1）。
+  Future<(int, int)> grid() =>
+      RustLib.instance.api.crateApiDocumentRasterInfoGrid(that: this);
+
+  // HINT: Make it `#[frb(sync)]` to let it become the default constructor of Dart class.
+  static Future<RasterInfo> newInstance({
+    required int width,
+    required int height,
+    required int tileSize,
+  }) => RustLib.instance.api.crateApiDocumentRasterInfoNew(
+    width: width,
+    height: height,
+    tileSize: tileSize,
+  );
+
+  @override
+  int get hashCode =>
+      width.hashCode ^ height.hashCode ^ tileSize.hashCode ^ tiles.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is RasterInfo &&
+          runtimeType == other.runtimeType &&
+          width == other.width &&
+          height == other.height &&
+          tileSize == other.tileSize &&
+          tiles == other.tiles;
+}
+
+/// 一个已分配的瓦片坐标。
+class TileRef {
+  final int x;
+  final int y;
+
+  const TileRef({required this.x, required this.y});
+
+  @override
+  int get hashCode => x.hashCode ^ y.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is TileRef &&
+          runtimeType == other.runtimeType &&
+          x == other.x &&
+          y == other.y;
 }

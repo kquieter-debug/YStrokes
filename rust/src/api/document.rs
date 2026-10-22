@@ -4,16 +4,26 @@
 //!
 //! ```text
 //! header : magic "YSTK"(4) | version u16 | layer_count u32
-//! layer  : name_len u16 | name utf8 | opacity f32 | visible u8 | blend u8 | stroke_count u32
+//! layer  : name_len u16 | name utf8 | opacity f32 | visible u8 | blend u8 | kind u8 | payload
+//!   kind 0 (vector) : stroke_count u32 | stroke...
+//!   kind 1 (raster) : width u32 | height u32 | tile_size u16 | tile_count u32 | tile...
 //! stroke : id u32 | color u32 | width f32 | point_count u32 | tool u8 | uses_pressure u8
 //! point  : x f32 | y f32 | pressure f32 | timestamp_ms u32
+//! tile   : x u16 | y u16
 //! ```
 //!
-//! 当前版本 v5：笔画头末尾带 `uses_pressure`（该笔是否按压感渲染）。
+//! `kind` 放在图层头、payload 按类型分支，而不是「统一成通用属性包」：分支只有两支，
+//! 矢量分支的字节与 v5 的笔画段逐位一致，便于对照测试；通用属性包会让解码器
+//! 必须理解所有类型的字段组合，出错面更大。
 //!
-//! **只接受 v5**（ADR-020）：第一版 release 尚未发布，没有需要照顾的旧文件，
-//! 因此不留迁移分支。迁移代码一旦写下来就永久背负两套结构，而它保护的用户
-//! 群体目前为零——这类代码应当在真有历史包袱时再加，而不是提前预留。
+//! 位图图层的**像素不进文档**：这里只记「哪些瓦片存在」，像素落在
+//! `<project>/tiles/<layerOrdinal>/<x>_<y>.png`。理由是 Rust 侧目前没有任何压缩依赖，
+//! 引入 `flate2` 会牵动构建与 ABI；而 PNG 在 Dart 侧已有（`image` 包），
+//! 且它可以直接用看图软件打开，排查「导出与屏幕不一致」时省事。
+//!
+//! 当前版本 v6。**只接受当前版本**（ADR-020）：第一版 release 尚未发布，
+//! 没有需要照顾的旧文件，因此不留迁移分支。迁移代码一旦写下来就永久背负两套结构，
+//! 而它保护的用户群体目前为零——这类代码应当在真有历史包袱时再加。
 //!
 //! 坐标用 f32 而非 f64：归一化值域固定在 0~1，绝对精度约 6e-8，
 //! 远小于简化容差（1e-3 量级），体积却减半。
@@ -25,7 +35,7 @@ use super::tools::ToolKind;
 const DOC_MAGIC: [u8; 4] = *b"YSTK";
 
 /// 当前文档版本。解码只接受这一版。
-pub const DOC_VERSION: u16 = 5;
+pub const DOC_VERSION: u16 = 6;
 
 /// 头部长度：magic(4) + version(2) + layer_count(4)。
 const DOC_HEADER_LEN: usize = 10;
@@ -33,15 +43,29 @@ const DOC_HEADER_LEN: usize = 10;
 /// 单条笔画头部：id + color + width + point_count + tool + uses_pressure。
 const STROKE_HEADER: usize = 18;
 
-/// 图层头部中与名称无关的固定部分：
-/// name_len(2) + opacity(4) + visible(1) + blend(1) + stroke_count(4)。
-const LAYER_HEADER_FIXED: usize = 12;
+/// 图层头部：name_len(2) + opacity(4) + visible(1) + blend(1) + kind(1)。
+const LAYER_HEADER_FIXED: usize = 9;
+
+/// 矢量 payload 的固定部分：stroke_count(4)。
+const VECTOR_PAYLOAD_HEADER: usize = 4;
+
+/// 位图 payload 的固定部分：width(4) + height(4) + tile_size(2) + tile_count(4)。
+const RASTER_PAYLOAD_HEADER: usize = 14;
+
+/// 单个瓦片引用：x(2) + y(2)。
+const TILE_REF_LEN: usize = 4;
 
 /// 单个采样点长度：x + y + pressure + timestamp。
 const POINT_LEN: usize = 16;
 
 /// 图层名长度上限，防止损坏文件把它解释成一个巨大的分配。
 const MAX_LAYER_NAME_LEN: usize = 512;
+
+/// 位图单边上限。超过它的宽高声明视为损坏——否则一个坏整数就能触发巨型分配。
+const MAX_RASTER_SIDE: u32 = 8192;
+
+/// 瓦片边长上限。取值过大等于退回「整层一张图」，会让惰性分配失去意义。
+const MAX_TILE_SIZE: u16 = 512;
 
 /// 图层混合模式。
 ///
@@ -101,9 +125,84 @@ impl LayerBlendMode {
     }
 }
 
+/// 图层内容的类型。
+///
+/// 不落成图层上的独立字段，而是由 `Layer::raster` 是否为空推导——
+/// 两个字段表达同一件事时，总会出现「声明的类型与载荷不一致」的中间态。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LayerKind {
+    Vector,
+    Raster,
+}
+
+impl LayerKind {
+    pub fn to_code(self) -> u8 {
+        match self {
+            LayerKind::Vector => 0,
+            LayerKind::Raster => 1,
+        }
+    }
+
+    /// 未知编码按矢量处理：与混合模式一样，只针对单字节损坏做容错。
+    pub fn from_code(code: u8) -> Self {
+        match code {
+            1 => LayerKind::Raster,
+            _ => LayerKind::Vector,
+        }
+    }
+}
+
+/// 一个已分配的瓦片坐标。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TileRef {
+    pub x: u16,
+    pub y: u16,
+}
+
+/// 位图图层的尺寸与瓦片清单。
+///
+/// 位图尺寸恒等于文档尺寸（D1：不做超采样），`tile_size` 决定网格划分，
+/// `tiles` 只列「真的写过像素」的那些瓦片——空白瓦片不占磁盘也不占内存。
+#[derive(Debug, Clone, PartialEq)]
+pub struct RasterInfo {
+    pub width: u32,
+    pub height: u32,
+    pub tile_size: u16,
+    pub tiles: Vec<TileRef>,
+}
+
+impl RasterInfo {
+    pub fn new(width: u32, height: u32, tile_size: u16) -> Self {
+        Self {
+            width,
+            height,
+            tile_size,
+            tiles: Vec::new(),
+        }
+    }
+
+    /// 横向/纵向各需要多少块瓦片（至少 1）。
+    pub fn grid(&self) -> (u32, u32) {
+        let size = self.tile_size.max(1) as u32;
+        (self.width.div_ceil(size).max(1), self.height.div_ceil(size).max(1))
+    }
+
+    fn is_sane(&self) -> bool {
+        self.tile_size > 0
+            && self.tile_size <= MAX_TILE_SIZE
+            && self.width > 0
+            && self.height > 0
+            && self.width <= MAX_RASTER_SIDE
+            && self.height <= MAX_RASTER_SIDE
+    }
+}
+
 /// 一个图层。
 ///
 /// 图层顺序即绘制顺序：索引 0 在最底层。
+///
+/// **不变量**：`raster.is_some()` 的图层 `strokes` 必须为空。两种内容不会同时存在
+/// （方案 C 混合层已明确不做），因此「图层类型」不需要额外的字段。
 #[derive(Debug, Clone, PartialEq)]
 pub struct Layer {
     pub name: String,
@@ -113,7 +212,10 @@ pub struct Layer {
     pub visible: bool,
     /// 与下方图层内容的混合方式。
     pub blend_mode: LayerBlendMode,
+    /// 矢量内容；位图图层恒为空。
     pub strokes: Vec<Stroke>,
+    /// 位图内容；矢量图层为 `None`。
+    pub raster: Option<RasterInfo>,
 }
 
 impl Layer {
@@ -124,6 +226,26 @@ impl Layer {
             visible: true,
             blend_mode: LayerBlendMode::Normal,
             strokes: Vec::new(),
+            raster: None,
+        }
+    }
+
+    /// 新建位图图层：不带任何瓦片，等于一张全透明画布。
+    pub fn raster_layer(name: String, info: RasterInfo) -> Self {
+        Self {
+            name,
+            opacity: 1.0,
+            visible: true,
+            blend_mode: LayerBlendMode::Normal,
+            strokes: Vec::new(),
+            raster: Some(info),
+        }
+    }
+
+    pub fn kind(&self) -> LayerKind {
+        match self.raster {
+            Some(_) => LayerKind::Raster,
+            None => LayerKind::Vector,
         }
     }
 }
@@ -143,13 +265,18 @@ pub fn encode_document(layers: Vec<Layer>) -> Vec<u8> {
     let payload: usize = layers
         .iter()
         .map(|layer| {
-            LAYER_HEADER_FIXED
-                + layer.name.len()
-                + layer
-                    .strokes
-                    .iter()
-                    .map(|s| STROKE_HEADER + s.points.len() * POINT_LEN)
-                    .sum::<usize>()
+            let body = match &layer.raster {
+                Some(info) => RASTER_PAYLOAD_HEADER + info.tiles.len() * TILE_REF_LEN,
+                None => {
+                    VECTOR_PAYLOAD_HEADER
+                        + layer
+                            .strokes
+                            .iter()
+                            .map(|s| STROKE_HEADER + s.points.len() * POINT_LEN)
+                            .sum::<usize>()
+                }
+            };
+            LAYER_HEADER_FIXED + layer.name.len() + body
         })
         .sum();
     let mut out = Vec::with_capacity(DOC_HEADER_LEN + payload);
@@ -166,23 +293,38 @@ pub fn encode_document(layers: Vec<Layer>) -> Vec<u8> {
         out.extend_from_slice(&(layer.opacity as f32).to_le_bytes());
         out.push(if layer.visible { 1 } else { 0 });
         out.push(layer.blend_mode.to_code());
-        out.extend_from_slice(&(layer.strokes.len() as u32).to_le_bytes());
+        out.push(layer.kind().to_code());
 
-        for stroke in &layer.strokes {
-            // 笔画头顺序固定为 id | color | width | point_count | tool | uses_pressure，
-            // 与图层外壳解耦，便于后续只演进图层结构而不动笔画。
-            // 新增字段只能追加在末尾（见 ADR-008、ADR-019）。
-            out.extend_from_slice(&stroke.id.to_le_bytes());
-            out.extend_from_slice(&stroke.color.to_le_bytes());
-            out.extend_from_slice(&(stroke.width as f32).to_le_bytes());
-            out.extend_from_slice(&(stroke.points.len() as u32).to_le_bytes());
-            out.push(stroke.tool.to_code());
-            out.push(if stroke.uses_pressure { 1 } else { 0 });
-            for p in &stroke.points {
-                out.extend_from_slice(&(p.x as f32).to_le_bytes());
-                out.extend_from_slice(&(p.y as f32).to_le_bytes());
-                out.extend_from_slice(&(p.pressure as f32).to_le_bytes());
-                out.extend_from_slice(&p.timestamp_ms.to_le_bytes());
+        match &layer.raster {
+            Some(info) => {
+                out.extend_from_slice(&info.width.to_le_bytes());
+                out.extend_from_slice(&info.height.to_le_bytes());
+                out.extend_from_slice(&info.tile_size.to_le_bytes());
+                out.extend_from_slice(&(info.tiles.len() as u32).to_le_bytes());
+                for tile in &info.tiles {
+                    out.extend_from_slice(&tile.x.to_le_bytes());
+                    out.extend_from_slice(&tile.y.to_le_bytes());
+                }
+            }
+            None => {
+                out.extend_from_slice(&(layer.strokes.len() as u32).to_le_bytes());
+                for stroke in &layer.strokes {
+                    // 笔画头顺序固定为 id | color | width | point_count | tool | uses_pressure，
+                    // 与图层外壳解耦，便于后续只演进图层结构而不动笔画。
+                    // 新增字段只能追加在末尾（见 ADR-008、ADR-019）。
+                    out.extend_from_slice(&stroke.id.to_le_bytes());
+                    out.extend_from_slice(&stroke.color.to_le_bytes());
+                    out.extend_from_slice(&(stroke.width as f32).to_le_bytes());
+                    out.extend_from_slice(&(stroke.points.len() as u32).to_le_bytes());
+                    out.push(stroke.tool.to_code());
+                    out.push(if stroke.uses_pressure { 1 } else { 0 });
+                    for p in &stroke.points {
+                        out.extend_from_slice(&(p.x as f32).to_le_bytes());
+                        out.extend_from_slice(&(p.y as f32).to_le_bytes());
+                        out.extend_from_slice(&(p.pressure as f32).to_le_bytes());
+                        out.extend_from_slice(&p.timestamp_ms.to_le_bytes());
+                    }
+                }
             }
         }
     }
@@ -239,7 +381,7 @@ fn decode_layers(data: &[u8], layer_count: usize) -> DecodeOutcome {
         let name_len = read_u16(data, cursor) as usize;
         cursor += 2;
 
-        if name_len > MAX_LAYER_NAME_LEN || data.len() < cursor + name_len + 10 {
+        if name_len > MAX_LAYER_NAME_LEN || data.len() < cursor + name_len + 7 {
             error = Some(format!("第 {} 个图层的名称长度非法或已截断", index + 1));
             break;
         }
@@ -249,8 +391,8 @@ fn decode_layers(data: &[u8], layer_count: usize) -> DecodeOutcome {
         let opacity = read_f32(data, cursor) as f64;
         let visible = data[cursor + 4] != 0;
         let blend_mode = LayerBlendMode::from_code(data[cursor + 5]);
-        let stroke_count = read_u32(data, cursor + 6) as usize;
-        cursor += 10;
+        let kind = LayerKind::from_code(data[cursor + 6]);
+        cursor += 7;
 
         let mut layer = Layer {
             name,
@@ -258,30 +400,21 @@ fn decode_layers(data: &[u8], layer_count: usize) -> DecodeOutcome {
             visible,
             blend_mode,
             strokes: Vec::new(),
+            raster: None,
         };
-        let mut layer_error = None;
 
-        for index in 0..stroke_count {
-            match read_stroke(data, cursor) {
-                Ok((stroke, next)) => {
-                    layer.strokes.push(stroke);
-                    cursor = next;
-                }
-                Err(message) => {
-                    layer_error = Some(format!(
-                        "图层「{}」第 {} 条笔画：{message}",
-                        layer.name,
-                        index + 1
-                    ));
-                    break;
-                }
-            }
-        }
+        let layer_error = match kind {
+            LayerKind::Vector => read_vector_payload(data, cursor, &mut layer),
+            LayerKind::Raster => read_raster_payload(data, cursor, &mut layer),
+        };
 
         layers.push(layer);
-        if layer_error.is_some() {
-            error = layer_error;
-            break;
+        match layer_error {
+            Ok(next) => cursor = next,
+            Err(message) => {
+                error = Some(message);
+                break;
+            }
         }
     }
 
@@ -290,6 +423,90 @@ fn decode_layers(data: &[u8], layer_count: usize) -> DecodeOutcome {
     }
 
     DecodeOutcome { layers, error }
+}
+
+/// 解析矢量 payload，返回下一个游标。
+///
+/// 出错时已解析的笔画会留在 `layer.strokes` 里：这是「部分恢复」的实现方式——
+/// 首条笔画就坏与第 100 条才坏的差别只在保住多少内容，不在是否整层丢弃。
+fn read_vector_payload(
+    data: &[u8],
+    start: usize,
+    layer: &mut Layer,
+) -> Result<usize, String> {
+    if data.len() < start + VECTOR_PAYLOAD_HEADER {
+        return Err(format!("图层「{}」在笔画数处截断", layer.name));
+    }
+    let stroke_count = read_u32(data, start) as usize;
+    let mut cursor = start + VECTOR_PAYLOAD_HEADER;
+
+    for index in 0..stroke_count {
+        match read_stroke(data, cursor) {
+            Ok((stroke, next)) => {
+                layer.strokes.push(stroke);
+                cursor = next;
+            }
+            Err(message) => {
+                return Err(format!(
+                    "图层「{}」第 {} 条笔画：{message}",
+                    layer.name,
+                    index + 1
+                ));
+            }
+        }
+    }
+    Ok(cursor)
+}
+
+/// 解析位图 payload，返回下一个游标。
+///
+/// 截断发生在瓦片清单中途时保留已解析的瓦片——文档本身不含像素，
+/// 保住清单就等于保住了「哪些瓦片要读」，像素文件仍在磁盘上。
+fn read_raster_payload(
+    data: &[u8],
+    start: usize,
+    layer: &mut Layer,
+) -> Result<usize, String> {
+    if data.len() < start + RASTER_PAYLOAD_HEADER {
+        return Err(format!("位图图层「{}」在尺寸处截断", layer.name));
+    }
+    let width = read_u32(data, start);
+    let height = read_u32(data, start + 4);
+    let tile_size = read_u16(data, start + 8);
+    let tile_count = read_u32(data, start + 10) as usize;
+    let mut cursor = start + RASTER_PAYLOAD_HEADER;
+
+    let mut info = RasterInfo::new(width, height, tile_size);
+    if !info.is_sane() {
+        return Err(format!(
+            "位图图层「{}」的尺寸非法：{}×{}，瓦片 {}",
+            layer.name, width, height, tile_size
+        ));
+    }
+
+    let (cols, rows) = info.grid();
+    let available = tile_count.min(data.len().saturating_sub(cursor) / TILE_REF_LEN);
+
+    for _ in 0..available {
+        let x = read_u16(data, cursor);
+        let y = read_u16(data, cursor + 2);
+        cursor += TILE_REF_LEN;
+        // 越界坐标直接丢弃：读到网格外的瓦片只可能是文件损坏，
+        // 让它进入渲染路径会让采样越界。
+        if (x as u32) < cols && (y as u32) < rows {
+            info.tiles.push(TileRef { x, y });
+        }
+    }
+
+    layer.raster = Some(info);
+
+    if available < tile_count {
+        return Err(format!(
+            "位图图层「{}」的瓦片清单截断（声明 {}，可读 {}）",
+            layer.name, tile_count, available
+        ));
+    }
+    Ok(cursor)
 }
 
 /// 解析一条笔画，返回（笔画, 下一个游标）。
@@ -375,6 +592,7 @@ mod tests {
                 visible: true,
                 blend_mode: LayerBlendMode::Normal,
                 strokes: vec![sample_stroke(0, ToolKind::Brush)],
+                raster: None,
             },
             Layer {
                 name: "线稿".to_string(),
@@ -385,8 +603,19 @@ mod tests {
                     sample_stroke(7, ToolKind::Brush),
                     sample_stroke(8, ToolKind::Eraser),
                 ],
+                raster: None,
             },
         ]
+    }
+
+    fn sample_raster_layer() -> Layer {
+        let mut info = RasterInfo::new(1080, 1920, 256);
+        info.tiles = vec![
+            TileRef { x: 0, y: 0 },
+            TileRef { x: 3, y: 7 },
+            TileRef { x: 4, y: 2 },
+        ];
+        Layer::raster_layer("位图".to_string(), info)
     }
 
     #[test]
@@ -517,13 +746,13 @@ mod tests {
     fn rejects_previous_version() {
         // 只改版本号，其余字节保持合法：报错必须来自版本检查，而不是解析失败。
         let mut bytes = encode_document(sample_layers());
-        bytes[4..6].copy_from_slice(&4u16.to_le_bytes());
+        bytes[4..6].copy_from_slice(&5u16.to_le_bytes());
 
         let outcome = decode_document(bytes);
         assert!(outcome.layers.is_empty());
         let error = outcome.error.unwrap_or_default();
-        assert!(error.contains('4'), "错误信息应指出实际版本：{error}");
-        assert!(error.contains('5'), "错误信息应指出当前版本：{error}");
+        assert!(error.contains('5'), "错误信息应指出实际版本：{error}");
+        assert!(error.contains('6'), "错误信息应指出当前版本：{error}");
     }
 
     #[test]
@@ -542,6 +771,95 @@ mod tests {
     fn writes_current_version() {
         let bytes = encode_document(sample_layers());
         assert_eq!(read_u16(&bytes, 4), DOC_VERSION);
-        assert_eq!(DOC_VERSION, 5);
+        assert_eq!(DOC_VERSION, 6);
+    }
+
+    // ---- v6 位图图层 ----
+
+    #[test]
+    fn raster_layer_round_trips() {
+        let original = vec![sample_raster_layer()];
+        let outcome = decode_document(encode_document(original.clone()));
+
+        assert!(outcome.error.is_none(), "不应产生错误：{:?}", outcome.error);
+        let decoded = &outcome.layers[0];
+        assert_eq!(decoded.kind(), LayerKind::Raster);
+        assert!(decoded.strokes.is_empty(), "位图图层不应带笔画");
+
+        let info = decoded.raster.as_ref().expect("应保留位图信息");
+        assert_eq!(info.width, 1080);
+        assert_eq!(info.height, 1920);
+        assert_eq!(info.tile_size, 256);
+        assert_eq!(info.tiles, original[0].raster.as_ref().unwrap().tiles);
+    }
+
+    #[test]
+    fn mixed_layers_keep_order_and_kind() {
+        let layers = vec![
+            Layer::new("底".to_string()),
+            sample_raster_layer(),
+            Layer::new("顶".to_string()),
+        ];
+        let outcome = decode_document(encode_document(layers));
+        assert!(outcome.error.is_none());
+        assert_eq!(outcome.layers.len(), 3);
+        assert_eq!(outcome.layers[0].kind(), LayerKind::Vector);
+        assert_eq!(outcome.layers[1].kind(), LayerKind::Raster);
+        assert_eq!(outcome.layers[2].kind(), LayerKind::Vector);
+    }
+
+    #[test]
+    fn raster_grid_uses_ceil_division() {
+        let info = RasterInfo::new(1080, 1920, 256);
+        // 1080 / 256 = 4.22 → 5 列；1920 / 256 = 7.5 → 8 行。
+        assert_eq!(info.grid(), (5, 8));
+    }
+
+    #[test]
+    fn raster_rejects_insane_dimensions() {
+        let mut info = RasterInfo::new(0, 1920, 256);
+        let layer = Layer::raster_layer("坏".to_string(), info.clone());
+        assert!(decode_document(encode_document(vec![layer]))
+            .error
+            .is_some());
+
+        info = RasterInfo::new(1080, 1920, 0);
+        let layer = Layer::raster_layer("坏".to_string(), info);
+        assert!(decode_document(encode_document(vec![layer]))
+            .error
+            .is_some());
+
+        let layer = Layer::raster_layer("坏".to_string(), RasterInfo::new(100_000, 100_000, 256));
+        assert!(decode_document(encode_document(vec![layer]))
+            .error
+            .is_some());
+    }
+
+    #[test]
+    fn raster_drops_out_of_grid_tiles() {
+        let mut info = RasterInfo::new(512, 512, 256);
+        // 512/256 = 2 列 × 2 行，合法范围是 0..1；(2,0) 与 (0,9) 越界。
+        info.tiles = vec![
+            TileRef { x: 0, y: 0 },
+            TileRef { x: 2, y: 0 },
+            TileRef { x: 0, y: 9 },
+            TileRef { x: 1, y: 1 },
+        ];
+        let layer = Layer::raster_layer("位图".to_string(), info);
+        let outcome = decode_document(encode_document(vec![layer]));
+        let tiles = &outcome.layers[0].raster.as_ref().unwrap().tiles;
+        assert_eq!(tiles, &vec![TileRef { x: 0, y: 0 }, TileRef { x: 1, y: 1 }]);
+    }
+
+    #[test]
+    fn raster_truncation_keeps_parsed_tiles() {
+        let bytes = encode_document(vec![sample_raster_layer()]);
+        // 砍掉最后两个瓦片引用（8 字节）。
+        let truncated = bytes[..bytes.len() - 8].to_vec();
+        let outcome = decode_document(truncated);
+
+        assert!(outcome.error.is_some());
+        let tiles = &outcome.layers[0].raster.as_ref().unwrap().tiles;
+        assert_eq!(tiles.len(), 1, "只应保住完整读到的那个瓦片");
     }
 }

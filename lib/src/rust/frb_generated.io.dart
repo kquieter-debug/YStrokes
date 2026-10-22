@@ -30,6 +30,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   bool dco_decode_bool(dynamic raw);
 
   @protected
+  Layer dco_decode_box_autoadd_layer(dynamic raw);
+
+  @protected
+  RasterInfo dco_decode_box_autoadd_raster_info(dynamic raw);
+
+  @protected
   DecodeOutcome dco_decode_decode_outcome(dynamic raw);
 
   @protected
@@ -43,6 +49,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   LayerBlendMode dco_decode_layer_blend_mode(dynamic raw);
+
+  @protected
+  LayerKind dco_decode_layer_kind(dynamic raw);
 
   @protected
   List<Layer> dco_decode_list_layer(dynamic raw);
@@ -60,7 +69,19 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   List<StrokePoint> dco_decode_list_stroke_point(dynamic raw);
 
   @protected
+  List<TileRef> dco_decode_list_tile_ref(dynamic raw);
+
+  @protected
   String? dco_decode_opt_String(dynamic raw);
+
+  @protected
+  RasterInfo? dco_decode_opt_box_autoadd_raster_info(dynamic raw);
+
+  @protected
+  RasterInfo dco_decode_raster_info(dynamic raw);
+
+  @protected
+  (int, int) dco_decode_record_u_32_u_32(dynamic raw);
 
   @protected
   Stroke dco_decode_stroke(dynamic raw);
@@ -72,10 +93,16 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   StrokePoint dco_decode_stroke_point(dynamic raw);
 
   @protected
+  TileRef dco_decode_tile_ref(dynamic raw);
+
+  @protected
   ToolKind dco_decode_tool_kind(dynamic raw);
 
   @protected
   ToolProfile dco_decode_tool_profile(dynamic raw);
+
+  @protected
+  int dco_decode_u_16(dynamic raw);
 
   @protected
   int dco_decode_u_32(dynamic raw);
@@ -93,6 +120,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   bool sse_decode_bool(SseDeserializer deserializer);
 
   @protected
+  Layer sse_decode_box_autoadd_layer(SseDeserializer deserializer);
+
+  @protected
+  RasterInfo sse_decode_box_autoadd_raster_info(SseDeserializer deserializer);
+
+  @protected
   DecodeOutcome sse_decode_decode_outcome(SseDeserializer deserializer);
 
   @protected
@@ -106,6 +139,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   LayerBlendMode sse_decode_layer_blend_mode(SseDeserializer deserializer);
+
+  @protected
+  LayerKind sse_decode_layer_kind(SseDeserializer deserializer);
 
   @protected
   List<Layer> sse_decode_list_layer(SseDeserializer deserializer);
@@ -123,7 +159,21 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   List<StrokePoint> sse_decode_list_stroke_point(SseDeserializer deserializer);
 
   @protected
+  List<TileRef> sse_decode_list_tile_ref(SseDeserializer deserializer);
+
+  @protected
   String? sse_decode_opt_String(SseDeserializer deserializer);
+
+  @protected
+  RasterInfo? sse_decode_opt_box_autoadd_raster_info(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  RasterInfo sse_decode_raster_info(SseDeserializer deserializer);
+
+  @protected
+  (int, int) sse_decode_record_u_32_u_32(SseDeserializer deserializer);
 
   @protected
   Stroke sse_decode_stroke(SseDeserializer deserializer);
@@ -135,10 +185,16 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   StrokePoint sse_decode_stroke_point(SseDeserializer deserializer);
 
   @protected
+  TileRef sse_decode_tile_ref(SseDeserializer deserializer);
+
+  @protected
   ToolKind sse_decode_tool_kind(SseDeserializer deserializer);
 
   @protected
   ToolProfile sse_decode_tool_profile(SseDeserializer deserializer);
+
+  @protected
+  int sse_decode_u_16(SseDeserializer deserializer);
 
   @protected
   int sse_decode_u_32(SseDeserializer deserializer);
@@ -154,6 +210,15 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void sse_encode_bool(bool self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_box_autoadd_layer(Layer self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_box_autoadd_raster_info(
+    RasterInfo self,
+    SseSerializer serializer,
+  );
 
   @protected
   void sse_encode_decode_outcome(DecodeOutcome self, SseSerializer serializer);
@@ -172,6 +237,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
     LayerBlendMode self,
     SseSerializer serializer,
   );
+
+  @protected
+  void sse_encode_layer_kind(LayerKind self, SseSerializer serializer);
 
   @protected
   void sse_encode_list_layer(List<Layer> self, SseSerializer serializer);
@@ -195,7 +263,22 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_list_tile_ref(List<TileRef> self, SseSerializer serializer);
+
+  @protected
   void sse_encode_opt_String(String? self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_opt_box_autoadd_raster_info(
+    RasterInfo? self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_raster_info(RasterInfo self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_record_u_32_u_32((int, int) self, SseSerializer serializer);
 
   @protected
   void sse_encode_stroke(Stroke self, SseSerializer serializer);
@@ -207,10 +290,16 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   void sse_encode_stroke_point(StrokePoint self, SseSerializer serializer);
 
   @protected
+  void sse_encode_tile_ref(TileRef self, SseSerializer serializer);
+
+  @protected
   void sse_encode_tool_kind(ToolKind self, SseSerializer serializer);
 
   @protected
   void sse_encode_tool_profile(ToolProfile self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_u_16(int self, SseSerializer serializer);
 
   @protected
   void sse_encode_u_32(int self, SseSerializer serializer);

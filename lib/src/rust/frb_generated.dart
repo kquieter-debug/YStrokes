@@ -69,7 +69,7 @@ class RustLib extends BaseEntrypoint<RustLibApi, RustLibApiImpl, RustLibWire> {
   String get codegenVersion => '2.12.0';
 
   @override
-  int get rustContentHash => -1579926693;
+  int get rustContentHash => -1491695768;
 
   static const kDefaultExternalLibraryLoaderConfig =
       ExternalLibraryLoaderConfig(
@@ -97,13 +97,32 @@ abstract class RustLibApi extends BaseApi {
     required LayerBlendMode that,
   });
 
+  Future<LayerKind> crateApiDocumentLayerKind({required Layer that});
+
+  Future<LayerKind> crateApiDocumentLayerKindFromCode({required int code});
+
+  Future<int> crateApiDocumentLayerKindToCode({required LayerKind that});
+
   Future<Layer> crateApiDocumentLayerNew({required String name});
+
+  Future<Layer> crateApiDocumentLayerRasterLayer({
+    required String name,
+    required RasterInfo info,
+  });
 
   Future<String> crateApiPing();
 
   Future<ToolProfile> crateApiToolsBrushProfile();
 
   Future<ToolProfile> crateApiToolsEraserProfile();
+
+  Future<(int, int)> crateApiDocumentRasterInfoGrid({required RasterInfo that});
+
+  Future<RasterInfo> crateApiDocumentRasterInfoNew({
+    required int width,
+    required int height,
+    required int tileSize,
+  });
 
   Future<String> crateApiRustVersion();
 
@@ -270,6 +289,93 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       );
 
   @override
+  Future<LayerKind> crateApiDocumentLayerKind({required Layer that}) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_box_autoadd_layer(that, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 5,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_layer_kind,
+          decodeErrorData: null,
+        ),
+        constMeta: kCrateApiDocumentLayerKindConstMeta,
+        argValues: [that],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiDocumentLayerKindConstMeta =>
+      const TaskConstMeta(debugName: "layer_kind", argNames: ["that"]);
+
+  @override
+  Future<LayerKind> crateApiDocumentLayerKindFromCode({required int code}) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_u_8(code, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 6,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_layer_kind,
+          decodeErrorData: null,
+        ),
+        constMeta: kCrateApiDocumentLayerKindFromCodeConstMeta,
+        argValues: [code],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiDocumentLayerKindFromCodeConstMeta =>
+      const TaskConstMeta(
+        debugName: "layer_kind_from_code",
+        argNames: ["code"],
+      );
+
+  @override
+  Future<int> crateApiDocumentLayerKindToCode({required LayerKind that}) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_layer_kind(that, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 7,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_u_8,
+          decodeErrorData: null,
+        ),
+        constMeta: kCrateApiDocumentLayerKindToCodeConstMeta,
+        argValues: [that],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiDocumentLayerKindToCodeConstMeta =>
+      const TaskConstMeta(debugName: "layer_kind_to_code", argNames: ["that"]);
+
+  @override
   Future<Layer> crateApiDocumentLayerNew({required String name}) {
     return handler.executeNormal(
       NormalTask(
@@ -279,7 +385,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 5,
+            funcId: 8,
             port: port_,
           );
         },
@@ -298,6 +404,41 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       const TaskConstMeta(debugName: "layer_new", argNames: ["name"]);
 
   @override
+  Future<Layer> crateApiDocumentLayerRasterLayer({
+    required String name,
+    required RasterInfo info,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_String(name, serializer);
+          sse_encode_box_autoadd_raster_info(info, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 9,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_layer,
+          decodeErrorData: null,
+        ),
+        constMeta: kCrateApiDocumentLayerRasterLayerConstMeta,
+        argValues: [name, info],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiDocumentLayerRasterLayerConstMeta =>
+      const TaskConstMeta(
+        debugName: "layer_raster_layer",
+        argNames: ["name", "info"],
+      );
+
+  @override
   Future<String> crateApiPing() {
     return handler.executeNormal(
       NormalTask(
@@ -306,7 +447,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 6,
+            funcId: 10,
             port: port_,
           );
         },
@@ -333,7 +474,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 7,
+            funcId: 11,
             port: port_,
           );
         },
@@ -360,7 +501,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 8,
+            funcId: 12,
             port: port_,
           );
         },
@@ -379,6 +520,73 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       const TaskConstMeta(debugName: "profile", argNames: []);
 
   @override
+  Future<(int, int)> crateApiDocumentRasterInfoGrid({
+    required RasterInfo that,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_box_autoadd_raster_info(that, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 13,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_record_u_32_u_32,
+          decodeErrorData: null,
+        ),
+        constMeta: kCrateApiDocumentRasterInfoGridConstMeta,
+        argValues: [that],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiDocumentRasterInfoGridConstMeta =>
+      const TaskConstMeta(debugName: "raster_info_grid", argNames: ["that"]);
+
+  @override
+  Future<RasterInfo> crateApiDocumentRasterInfoNew({
+    required int width,
+    required int height,
+    required int tileSize,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_u_32(width, serializer);
+          sse_encode_u_32(height, serializer);
+          sse_encode_u_16(tileSize, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 14,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_raster_info,
+          decodeErrorData: null,
+        ),
+        constMeta: kCrateApiDocumentRasterInfoNewConstMeta,
+        argValues: [width, height, tileSize],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiDocumentRasterInfoNewConstMeta =>
+      const TaskConstMeta(
+        debugName: "raster_info_new",
+        argNames: ["width", "height", "tileSize"],
+      );
+
+  @override
   Future<String> crateApiRustVersion() {
     return handler.executeNormal(
       NormalTask(
@@ -387,7 +595,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 9,
+            funcId: 15,
             port: port_,
           );
         },
@@ -419,7 +627,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 10,
+            funcId: 16,
             port: port_,
           );
         },
@@ -454,7 +662,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 11,
+            funcId: 17,
             port: port_,
           );
         },
@@ -486,7 +694,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 12,
+            funcId: 18,
             port: port_,
           );
         },
@@ -522,7 +730,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 13,
+            funcId: 19,
             port: port_,
           );
         },
@@ -553,7 +761,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 14,
+            funcId: 20,
             port: port_,
           );
         },
@@ -581,7 +789,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 15,
+            funcId: 21,
             port: port_,
           );
         },
@@ -609,7 +817,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 16,
+            funcId: 22,
             port: port_,
           );
         },
@@ -640,6 +848,18 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  Layer dco_decode_box_autoadd_layer(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return dco_decode_layer(raw);
+  }
+
+  @protected
+  RasterInfo dco_decode_box_autoadd_raster_info(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return dco_decode_raster_info(raw);
+  }
+
+  @protected
   DecodeOutcome dco_decode_decode_outcome(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
@@ -667,14 +887,15 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   Layer dco_decode_layer(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 5)
-      throw Exception('unexpected arr length: expect 5 but see ${arr.length}');
+    if (arr.length != 6)
+      throw Exception('unexpected arr length: expect 6 but see ${arr.length}');
     return Layer(
       name: dco_decode_String(arr[0]),
       opacity: dco_decode_f_64(arr[1]),
       visible: dco_decode_bool(arr[2]),
       blendMode: dco_decode_layer_blend_mode(arr[3]),
       strokes: dco_decode_list_stroke(arr[4]),
+      raster: dco_decode_opt_box_autoadd_raster_info(arr[5]),
     );
   }
 
@@ -682,6 +903,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   LayerBlendMode dco_decode_layer_blend_mode(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return LayerBlendMode.values[raw as int];
+  }
+
+  @protected
+  LayerKind dco_decode_layer_kind(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return LayerKind.values[raw as int];
   }
 
   @protected
@@ -715,9 +942,45 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  List<TileRef> dco_decode_list_tile_ref(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return (raw as List<dynamic>).map(dco_decode_tile_ref).toList();
+  }
+
+  @protected
   String? dco_decode_opt_String(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return raw == null ? null : dco_decode_String(raw);
+  }
+
+  @protected
+  RasterInfo? dco_decode_opt_box_autoadd_raster_info(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return raw == null ? null : dco_decode_box_autoadd_raster_info(raw);
+  }
+
+  @protected
+  RasterInfo dco_decode_raster_info(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 4)
+      throw Exception('unexpected arr length: expect 4 but see ${arr.length}');
+    return RasterInfo(
+      width: dco_decode_u_32(arr[0]),
+      height: dco_decode_u_32(arr[1]),
+      tileSize: dco_decode_u_16(arr[2]),
+      tiles: dco_decode_list_tile_ref(arr[3]),
+    );
+  }
+
+  @protected
+  (int, int) dco_decode_record_u_32_u_32(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 2) {
+      throw Exception('Expected 2 elements, got ${arr.length}');
+    }
+    return (dco_decode_u_32(arr[0]), dco_decode_u_32(arr[1]));
   }
 
   @protected
@@ -765,6 +1028,15 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  TileRef dco_decode_tile_ref(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 2)
+      throw Exception('unexpected arr length: expect 2 but see ${arr.length}');
+    return TileRef(x: dco_decode_u_16(arr[0]), y: dco_decode_u_16(arr[1]));
+  }
+
+  @protected
   ToolKind dco_decode_tool_kind(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return ToolKind.values[raw as int];
@@ -780,6 +1052,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       smoothWindow: dco_decode_u_32(arr[0]),
       erases: dco_decode_bool(arr[1]),
     );
+  }
+
+  @protected
+  int dco_decode_u_16(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return raw as int;
   }
 
   @protected
@@ -814,6 +1092,18 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  Layer sse_decode_box_autoadd_layer(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    return (sse_decode_layer(deserializer));
+  }
+
+  @protected
+  RasterInfo sse_decode_box_autoadd_raster_info(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    return (sse_decode_raster_info(deserializer));
+  }
+
+  @protected
   DecodeOutcome sse_decode_decode_outcome(SseDeserializer deserializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     var var_layers = sse_decode_list_layer(deserializer);
@@ -841,12 +1131,14 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_visible = sse_decode_bool(deserializer);
     var var_blendMode = sse_decode_layer_blend_mode(deserializer);
     var var_strokes = sse_decode_list_stroke(deserializer);
+    var var_raster = sse_decode_opt_box_autoadd_raster_info(deserializer);
     return Layer(
       name: var_name,
       opacity: var_opacity,
       visible: var_visible,
       blendMode: var_blendMode,
       strokes: var_strokes,
+      raster: var_raster,
     );
   }
 
@@ -855,6 +1147,13 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     // Codec=Sse (Serialization based), see doc to use other codecs
     var inner = sse_decode_i_32(deserializer);
     return LayerBlendMode.values[inner];
+  }
+
+  @protected
+  LayerKind sse_decode_layer_kind(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var inner = sse_decode_i_32(deserializer);
+    return LayerKind.values[inner];
   }
 
   @protected
@@ -908,6 +1207,18 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  List<TileRef> sse_decode_list_tile_ref(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    var len_ = sse_decode_i_32(deserializer);
+    var ans_ = <TileRef>[];
+    for (var idx_ = 0; idx_ < len_; ++idx_) {
+      ans_.add(sse_decode_tile_ref(deserializer));
+    }
+    return ans_;
+  }
+
+  @protected
   String? sse_decode_opt_String(SseDeserializer deserializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
 
@@ -916,6 +1227,42 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     } else {
       return null;
     }
+  }
+
+  @protected
+  RasterInfo? sse_decode_opt_box_autoadd_raster_info(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    if (sse_decode_bool(deserializer)) {
+      return (sse_decode_box_autoadd_raster_info(deserializer));
+    } else {
+      return null;
+    }
+  }
+
+  @protected
+  RasterInfo sse_decode_raster_info(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_width = sse_decode_u_32(deserializer);
+    var var_height = sse_decode_u_32(deserializer);
+    var var_tileSize = sse_decode_u_16(deserializer);
+    var var_tiles = sse_decode_list_tile_ref(deserializer);
+    return RasterInfo(
+      width: var_width,
+      height: var_height,
+      tileSize: var_tileSize,
+      tiles: var_tiles,
+    );
+  }
+
+  @protected
+  (int, int) sse_decode_record_u_32_u_32(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_field0 = sse_decode_u_32(deserializer);
+    var var_field1 = sse_decode_u_32(deserializer);
+    return (var_field0, var_field1);
   }
 
   @protected
@@ -968,6 +1315,14 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  TileRef sse_decode_tile_ref(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_x = sse_decode_u_16(deserializer);
+    var var_y = sse_decode_u_16(deserializer);
+    return TileRef(x: var_x, y: var_y);
+  }
+
+  @protected
   ToolKind sse_decode_tool_kind(SseDeserializer deserializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     var inner = sse_decode_i_32(deserializer);
@@ -980,6 +1335,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_smoothWindow = sse_decode_u_32(deserializer);
     var var_erases = sse_decode_bool(deserializer);
     return ToolProfile(smoothWindow: var_smoothWindow, erases: var_erases);
+  }
+
+  @protected
+  int sse_decode_u_16(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    return deserializer.buffer.getUint16();
   }
 
   @protected
@@ -1012,6 +1373,21 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  void sse_encode_box_autoadd_layer(Layer self, SseSerializer serializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_layer(self, serializer);
+  }
+
+  @protected
+  void sse_encode_box_autoadd_raster_info(
+    RasterInfo self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_raster_info(self, serializer);
+  }
+
+  @protected
   void sse_encode_decode_outcome(DecodeOutcome self, SseSerializer serializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_list_layer(self.layers, serializer);
@@ -1038,6 +1414,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_bool(self.visible, serializer);
     sse_encode_layer_blend_mode(self.blendMode, serializer);
     sse_encode_list_stroke(self.strokes, serializer);
+    sse_encode_opt_box_autoadd_raster_info(self.raster, serializer);
   }
 
   @protected
@@ -1045,6 +1422,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     LayerBlendMode self,
     SseSerializer serializer,
   ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_i_32(self.index, serializer);
+  }
+
+  @protected
+  void sse_encode_layer_kind(LayerKind self, SseSerializer serializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_i_32(self.index, serializer);
   }
@@ -1102,6 +1485,15 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  void sse_encode_list_tile_ref(List<TileRef> self, SseSerializer serializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_i_32(self.length, serializer);
+    for (final item in self) {
+      sse_encode_tile_ref(item, serializer);
+    }
+  }
+
+  @protected
   void sse_encode_opt_String(String? self, SseSerializer serializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
 
@@ -1109,6 +1501,35 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     if (self != null) {
       sse_encode_String(self, serializer);
     }
+  }
+
+  @protected
+  void sse_encode_opt_box_autoadd_raster_info(
+    RasterInfo? self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    sse_encode_bool(self != null, serializer);
+    if (self != null) {
+      sse_encode_box_autoadd_raster_info(self, serializer);
+    }
+  }
+
+  @protected
+  void sse_encode_raster_info(RasterInfo self, SseSerializer serializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_u_32(self.width, serializer);
+    sse_encode_u_32(self.height, serializer);
+    sse_encode_u_16(self.tileSize, serializer);
+    sse_encode_list_tile_ref(self.tiles, serializer);
+  }
+
+  @protected
+  void sse_encode_record_u_32_u_32((int, int) self, SseSerializer serializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_u_32(self.$1, serializer);
+    sse_encode_u_32(self.$2, serializer);
   }
 
   @protected
@@ -1141,6 +1562,13 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  void sse_encode_tile_ref(TileRef self, SseSerializer serializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_u_16(self.x, serializer);
+    sse_encode_u_16(self.y, serializer);
+  }
+
+  @protected
   void sse_encode_tool_kind(ToolKind self, SseSerializer serializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_i_32(self.index, serializer);
@@ -1151,6 +1579,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_u_32(self.smoothWindow, serializer);
     sse_encode_bool(self.erases, serializer);
+  }
+
+  @protected
+  void sse_encode_u_16(int self, SseSerializer serializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    serializer.buffer.putUint16(self);
   }
 
   @protected
