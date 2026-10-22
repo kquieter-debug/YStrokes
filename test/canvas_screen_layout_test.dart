@@ -184,4 +184,21 @@ void main() {
 
     expect(find.byKey(const Key('tool-pressure-switch')), findsNothing);
   });
+
+  testWidgets('顶栏「图层」在右侧展开气泡，点外部关闭', (tester) async {
+    await pumpCanvas(tester, const Size(400, 800));
+
+    await tester.tap(find.byTooltip('图层'));
+    await tester.pumpAndSettle();
+
+    final bubble = tester.getRect(find.byKey(const Key('layers-bubble')));
+    expect(bubble.right, 400 - 10, reason: '固定贴屏幕右缘');
+    expect(bubble.top, greaterThan(48), reason: '从按钮下方向下展开');
+    expect(find.byKey(const Key('layer-add')), findsOneWidget);
+
+    // 左侧远离气泡，命中遮罩。
+    await tester.tapAt(const Offset(20, 300));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('layers-bubble')), findsNothing);
+  });
 }

@@ -22,7 +22,7 @@ import '../services/exporter.dart';
 import '../services/project_store.dart';
 import '../services/stroke_smoother.dart';
 import '../widgets/app_icon.dart';
-import '../widgets/layers_sheet.dart';
+import '../widgets/layers_bubble.dart';
 import '../widgets/tool_settings_bubble.dart';
 import 'export_screen.dart';
 
@@ -136,6 +136,13 @@ class _CanvasScreenState extends State<CanvasScreen>
 
   /// 面板本体，用来测量气泡的锚点位置。
   final GlobalKey _panelKey = GlobalKey();
+
+  /// 顶栏「图层」按钮，用作图层气泡的锚点。
+  final GlobalKey _layersButtonKey = GlobalKey();
+
+  /// 气泡出入场时长。这个版本的 `showGeneralDialog` 只有一个时长参数，
+  /// 退场会沿用同一个值；130ms 对两者都够短，不必为此自己写 Route。
+  static const Duration _bubbleDuration = Duration(milliseconds: 130);
 
   /// 已完成笔画的渲染缓存。
   ui.Picture? _committedPicture;
@@ -636,28 +643,37 @@ class _CanvasScreenState extends State<CanvasScreen>
     );
   }
 
-  /// 打开图层面板。
+  /// 打开图层气泡。
   ///
   /// 面板直接改引擎状态，因此这里在每次变更后重绘并触发保存；
-  /// 面板关闭后再刷一次，确保缩略图与列表状态一致。
-  /// 面板返回 `true` 表示刚刚清空过当前图层——清空会关闭面板，提示由画板弹出。
+  /// 气泡关闭后再刷一次，确保缩略图与列表状态一致。
+  /// 清空图层时面板会先回调 [LayersBubble.onCleared] 再请求关闭，
+  /// 因此提示由画板弹出、不会随气泡一起消失。
   Future<void> _openLayers() async {
-    final cleared = await showModalBottomSheet<bool>(
+    final anchor = _globalRect(_layersButtonKey);
+    if (anchor == null) return;
+
+    await showGeneralDialog<void>(
       context: context,
-      isScrollControlled: true,
-      showDragHandle: true,
-      builder: (_) => LayersSheet(
+      barrierDismissible: false,
+      barrierLabel: '关闭图层',
+      barrierColor: Colors.transparent,
+      transitionDuration: _bubbleDuration,
+      pageBuilder: (dialogContext, animation, _) => LayersBubble(
         engine: _engine,
+        anchor: anchor,
+        animation: animation,
         onChanged: () {
           setState(() {});
           _scheduleSave();
         },
+        onCleared: () => _showHint('已清空当前图层'),
+        onClose: () => Navigator.of(dialogContext).pop(),
       ),
     );
     if (!mounted) return;
     setState(() {});
     _scheduleSave();
-    if (cleared == true) _showHint('已清空当前图层');
   }
 
   // ---- 工具栏拖动 ----
@@ -700,6 +716,7 @@ class _CanvasScreenState extends State<CanvasScreen>
               icon: const Icon(Icons.fit_screen_outlined),
             ),
             IconButton(
+              key: _layersButtonKey,
               onPressed: _openLayers,
               tooltip: '图层',
               icon: const Icon(Icons.layers_outlined),
@@ -863,17 +880,16 @@ class _CanvasScreenState extends State<CanvasScreen>
       barrierDismissible: false,
       barrierLabel: '关闭工具设置',
       barrierColor: Colors.transparent,
-      transitionDuration: const Duration(milliseconds: 120),
-      pageBuilder: (dialogContext, _, _) => ToolSettingsBubble(
+      transitionDuration: _bubbleDuration,
+      // 动画由气泡自己施加：它知道自己在工具栏的哪一侧，因此能把缩放锚点
+      // 放在朝向工具栏的那条边上。交给 transitionBuilder 只能绕整页缩放。
+      pageBuilder: (dialogContext, animation, _) => ToolSettingsBubble(
         tool: tool,
         initial: _settings[tool]!,
         anchor: anchor,
+        animation: animation,
         onChanged: (value) => _applyToolSettings(tool, value),
         onClose: () => Navigator.of(dialogContext).pop(),
-      ),
-      transitionBuilder: (context, animation, _, child) => FadeTransition(
-        opacity: CurvedAnimation(parent: animation, curve: Curves.easeOut),
-        child: child,
       ),
     );
   }
@@ -892,8 +908,11 @@ class _CanvasScreenState extends State<CanvasScreen>
   }
 
   /// 工具栏面板当前的全局矩形，用作气泡的锚点。
-  Rect? _toolbarGlobalRect() {
-    final box = _panelKey.currentContext?.findRenderObject();
+  Rect? _toolbarGlobalRect() => _globalRect(_panelKey);
+
+  /// 取某个组件的全局矩形；尚未布局时返回 null。
+  Rect? _globalRect(GlobalKey key) {
+    final box = key.currentContext?.findRenderObject();
     if (box is! RenderBox || !box.hasSize) return null;
     return box.localToGlobal(Offset.zero) & box.size;
   }

@@ -6,7 +6,7 @@ import 'package:ystrokes/src/rust/api/document.dart' show LayerBlendMode;
 import 'package:ystrokes/src/rust/api/stroke.dart' as rust;
 import 'package:ystrokes/src/rust/api/tools.dart';
 import 'package:ystrokes/src/services/drawing_engine.dart';
-import 'package:ystrokes/src/widgets/layers_sheet.dart';
+import 'package:ystrokes/src/widgets/layers_panel.dart';
 
 /// 图层面板的交互：重命名、混合模式、向下合并。
 void main() {
@@ -37,7 +37,12 @@ void main() {
     await tester.pumpWidget(
       MaterialApp(
         home: Scaffold(
-          body: LayersSheet(engine: engine, onChanged: () {}),
+          body: LayersPanel(
+            engine: engine,
+            onChanged: () {},
+            onClose: () {},
+            onCleared: () {},
+          ),
         ),
       ),
     );

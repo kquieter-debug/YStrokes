@@ -6,6 +6,7 @@ import '../models/tool_settings.dart';
 import '../rust/api/stroke.dart' as rust;
 import '../rust/api/tools.dart';
 import '../services/stroke_outline.dart';
+import 'bubble_surface.dart';
 import 'hsv_color_picker.dart';
 
 /// 工具设置气泡：贴在悬浮工具栏旁边的小面板。
@@ -21,6 +22,9 @@ import 'hsv_color_picker.dart';
 ///
 /// 改动即时生效之所以安全：宽度与颜色只影响之后画的笔，压感标记也记在笔画上
 /// （ADR-019），因此拨开关不会触发整篇内容重烘焙。
+///
+/// 出入场动画由 [BubbleSurface] 负责，缩放锚点贴在朝向工具栏的那一侧：
+/// 气泡看起来是从工具栏边缘长出来的，而不是在屏幕中央凭空放大。
 class ToolSettingsBubble extends StatefulWidget {
   const ToolSettingsBubble({
     super.key,
@@ -29,6 +33,7 @@ class ToolSettingsBubble extends StatefulWidget {
     required this.anchor,
     required this.onChanged,
     required this.onClose,
+    this.animation,
   });
 
   final ToolKind tool;
@@ -42,6 +47,9 @@ class ToolSettingsBubble extends StatefulWidget {
 
   /// 气泡被要求关闭（点外部 / 尝试拖动工具栏）。
   final VoidCallback onClose;
+
+  /// 出入场动画；为空时直接呈现（便于单独测试布局）。
+  final Animation<double>? animation;
 
   @override
   State<ToolSettingsBubble> createState() => _ToolSettingsBubbleState();
@@ -94,29 +102,28 @@ class _ToolSettingsBubbleState extends State<ToolSettingsBubble> {
 
     return Stack(
       children: [
-        // 遮罩层只负责「点外部 / 尝试拖动」→ 关闭，不使用深色底：
-        // 全屏变暗会让人误以为画布不可操作了。
-        Positioned.fill(
-          child: GestureDetector(
-            key: const Key('tool-settings-barrier'),
-            behavior: HitTestBehavior.opaque,
-            onTap: widget.onClose,
-            // 在工具栏把手上尝试拖动也会命中这里：先关闭气泡，再拖一次即可移动。
-            onPanStart: (_) => widget.onClose(),
-          ),
+        BubbleBarrier(
+          key: const Key('tool-settings-barrier'),
+          onClose: widget.onClose,
         ),
         Positioned(
+          key: const Key('tool-settings-bubble'),
           left: left.clamp(inset.left + _gap, screen.width),
           top: top.toDouble(),
           width: width,
           child: ConstrainedBox(
             constraints: BoxConstraints(maxHeight: maxHeight),
-            child: Material(
-              elevation: 8,
-              borderRadius: BorderRadius.circular(16),
-              clipBehavior: Clip.antiAlias,
-              color: Theme.of(context).colorScheme.surfaceContainerHigh,
-              child: _buildContent(context),
+            child: BubbleSurface(
+              animation: widget.animation,
+              // 锚在朝向工具栏的那条边：右侧展开时贴左边缘，翻到左侧时贴右边缘。
+              alignment: onRight ? Alignment.centerLeft : Alignment.centerRight,
+              child: Material(
+                elevation: 8,
+                borderRadius: BorderRadius.circular(16),
+                clipBehavior: Clip.antiAlias,
+                color: Theme.of(context).colorScheme.surfaceContainerHigh,
+                child: _buildContent(context),
+              ),
             ),
           ),
         ),

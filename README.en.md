@@ -16,6 +16,7 @@ A vector-stroke drawing app for Android, built around how a stroke actually feel
 - **Incremental smoothing**: smoothing happens as samples arrive. The point list committed on pen-up is bit-for-bit what was on screen — no flicker, no shape shift.
 - **Pressure-driven width**: pressure maps to width through a gamma curve (down to 25%), rendered as a per-point outline filled in one path. Canvas, thumbnails, PNG and SVG all agree. On by default for the brush, off for the eraser, and **the toggle only affects strokes drawn afterwards** — existing strokes keep the look they had when drawn.
 - **Tool settings bubble**: long-press a tool (or tap the selected one again) to open a settings panel next to the floating toolbar. Dismiss it by tapping outside — there is no confirm button.
+- **Layers bubble**: the layer panel docks to the right edge and unfolds from the top bar, applying changes immediately. No confirm button either — tap outside to collapse it.
 - **Durable writes**: atomic write (temp file + rename) means a process kill never leaves a truncated document; damaged documents recover partially instead of failing outright.
 - **Undoable**: adding strokes, erasing, and clearing the canvas can all be undone.
 - **Tools**: brush and eraser. Erasing is recorded as a stroke, so undo comes for free and the document never has to store a bitmap.

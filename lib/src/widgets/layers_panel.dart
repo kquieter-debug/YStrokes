@@ -1,5 +1,3 @@
-import 'dart:async';
-
 import 'package:flutter/material.dart';
 
 import '../models/layer.dart';
@@ -7,7 +5,10 @@ import '../models/layer_blend.dart';
 import '../services/app_settings.dart';
 import '../services/drawing_engine.dart';
 
-/// 图层面板（底部弹出）。
+/// 图层气泡的内容区。
+///
+/// 只负责「内容 + 交互」，外框、定位与出入场动画由 [LayersBubble] 提供；
+/// 这也让它能在测试里被单独挂载（不需要真实路由）。
 ///
 /// 自上而下按「顶层在前」展示，与 Photoshop 的面板顺序一致；引擎内部则用
 /// 自下而上的顺序绘制，两者只在展示处反转一次。
@@ -17,13 +18,15 @@ import '../services/drawing_engine.dart';
 /// - 拖拽默认**不**即时重绘画布（见 [AppSettings.liveLayerReorder]）：
 ///   拖动只更新列表占位，松手才提交顺序，避免逐帧重建合成结果。
 /// - 每行的「更多」菜单提供重命名、向下合并、删除。
-/// - 面板底部的「清空当前图层」需要二次确认；确认后清空并关闭面板，
-///   让画布结果与随之出现的提示都可见（返回值 `true` 通知画板弹提示）。
-class LayersSheet extends StatefulWidget {
-  const LayersSheet({
+/// - 底部的「清空当前图层」需要二次确认；确认后清空并**关闭气泡**，
+///   让画布结果与随之出现的提示都可见。
+class LayersPanel extends StatefulWidget {
+  const LayersPanel({
     super.key,
     required this.engine,
     required this.onChanged,
+    required this.onClose,
+    required this.onCleared,
   });
 
   final DrawingEngine engine;
@@ -31,16 +34,27 @@ class LayersSheet extends StatefulWidget {
   /// 图层状态改变后回调：通知画板重绘并触发自动保存。
   final VoidCallback onChanged;
 
+  /// 请求关闭气泡（清空图层后使用）。
+  final VoidCallback onClose;
+
+  /// 刚刚清空过当前图层，由画板负责弹提示。
+  final VoidCallback onCleared;
+
   @override
-  State<LayersSheet> createState() => _LayersSheetState();
+  State<LayersPanel> createState() => _LayersPanelState();
 }
 
-class _LayersSheetState extends State<LayersSheet> {
+class _LayersPanelState extends State<LayersPanel> {
   /// 拖拽中的**展示顺序**（顶层在前）。
   ///
   /// 默认模式下拖动只改这份预览顺序：列表跟手，画布不动，松手才写回引擎。
   /// 即时模式下该字段为 null，直接改引擎顺序。
   List<String>? _displayOrder;
+
+  /// 拖拽反馈的宽度，取面板自身的宽度（构建期派生值）。
+  ///
+  /// 不能再用「屏幕宽度的 82%」：气泡比屏幕窄得多，那样拖起来的影子会飞出面板。
+  double _feedbackWidth = 240;
 
   DrawingEngine get _engine => widget.engine;
 
@@ -185,7 +199,7 @@ class _LayersSheetState extends State<LayersSheet> {
     _mutate(() => _engine.mergeDown(layer.id));
   }
 
-  /// 清空当前图层：先二次确认，确认后清空并关闭面板。
+  /// 清空当前图层：先二次确认，确认后清空并关闭气泡。
   ///
   /// 清空本身可撤销（引擎里是一条 `_ClearLayerEdit`），但误触的代价是
   /// 「以为自己删错了」的一整轮慌乱，因此仍然要求确认。
@@ -219,10 +233,9 @@ class _LayersSheetState extends State<LayersSheet> {
 
     widget.onChanged();
     setState(() {});
-    // 关闭面板：清空后画布立刻可见，画板弹出的提示也不会被面板遮住。
-    // 用 maybePop 而不是 pop：面板被当作普通页面渲染时（例如测试里直接挂在
-    // home 上）没有可弹出的路由，pop 会抛异常。
-    unawaited(Navigator.of(context).maybePop(true));
+    // 关掉气泡：清空后画布立刻可见，画板弹出的提示也不会被面板遮住。
+    widget.onCleared();
+    widget.onClose();
   }
 
   // ---- 构建 ----
@@ -233,111 +246,136 @@ class _LayersSheetState extends State<LayersSheet> {
     final layers = _engine.layers;
     final active = _engine.activeLayer;
 
-    return SafeArea(
-      top: false,
-      child: Padding(
-        padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            Row(
-              children: [
-                Text('图层', style: theme.textTheme.titleMedium),
-                const SizedBox(width: 8),
-                Text(
-                  '${layers.length}',
-                  style: theme.textTheme.bodySmall?.copyWith(
-                    color: theme.colorScheme.onSurfaceVariant,
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        _feedbackWidth = constraints.maxWidth.isFinite
+            ? constraints.maxWidth
+            : _feedbackWidth;
+
+        final list = SingleChildScrollView(
+          child: Column(
+            // 顶层在前。
+            children: [
+              for (final layer in _displayLayers) _buildRow(context, layer),
+            ],
+          ),
+        );
+
+        return Padding(
+          padding: const EdgeInsets.fromLTRB(12, 6, 12, 10),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Row(
+                children: [
+                  Text('图层', style: theme.textTheme.titleMedium),
+                  const SizedBox(width: 8),
+                  Text(
+                    '${layers.length}',
+                    style: theme.textTheme.bodySmall?.copyWith(
+                      color: theme.colorScheme.onSurfaceVariant,
+                    ),
+                  ),
+                  const Spacer(),
+                  IconButton(
+                    key: const Key('layer-add'),
+                    tooltip: '新建图层',
+                    visualDensity: VisualDensity.compact,
+                    onPressed: () => _mutate(_engine.addLayer),
+                    icon: const Icon(Icons.add),
+                  ),
+                ],
+              ),
+              // 有界高度时让列表吃掉剩余空间（气泡的高矮随屏幕变化）；
+              // 无界高度时（例如测试里直接挂载面板）退回到固定上限。
+              if (constraints.maxHeight.isFinite)
+                Flexible(child: list)
+              else
+                ConstrainedBox(
+                  constraints: const BoxConstraints(maxHeight: 320),
+                  child: list,
+                ),
+              const SizedBox(height: 6),
+              const Divider(height: 1),
+              const SizedBox(height: 8),
+              Row(
+                children: [
+                  Text('不透明度', style: theme.textTheme.titleSmall),
+                  const Spacer(),
+                  Text(
+                    '${(active.opacity * 100).round()}%',
+                    style: theme.textTheme.bodyMedium?.copyWith(
+                      color: theme.colorScheme.onSurfaceVariant,
+                    ),
+                  ),
+                ],
+              ),
+              SliderTheme(
+                data: SliderTheme.of(context).copyWith(
+                  trackHeight: 3,
+                  thumbShape: const RoundSliderThumbShape(
+                    enabledThumbRadius: 7,
+                  ),
+                  overlayShape: const RoundSliderOverlayShape(
+                    overlayRadius: 14,
                   ),
                 ),
-                const Spacer(),
-                IconButton(
-                  key: const Key('layer-add'),
-                  tooltip: '新建图层',
-                  onPressed: () => _mutate(_engine.addLayer),
-                  icon: const Icon(Icons.add),
-                ),
-              ],
-            ),
-            ConstrainedBox(
-              constraints: const BoxConstraints(maxHeight: 300),
-              child: SingleChildScrollView(
-                child: Column(
-                  // 顶层在前。
-                  children: [
-                    for (final layer in _displayLayers)
-                      _buildRow(context, layer),
-                  ],
-                ),
-              ),
-            ),
-            const SizedBox(height: 8),
-            const Divider(height: 1),
-            const SizedBox(height: 12),
-            Row(
-              children: [
-                Text('不透明度', style: theme.textTheme.titleSmall),
-                const Spacer(),
-                Text(
-                  '${(active.opacity * 100).round()}%',
-                  style: theme.textTheme.bodyMedium?.copyWith(
-                    color: theme.colorScheme.onSurfaceVariant,
+                child: Slider(
+                  key: const Key('layer-opacity'),
+                  value: active.opacity.clamp(0.0, 1.0),
+                  onChanged: (value) => _mutate(
+                    () => _engine.setLayerOpacity(_engine.activeLayerId, value),
                   ),
                 ),
-              ],
-            ),
-            Slider(
-              key: const Key('layer-opacity'),
-              value: active.opacity.clamp(0.0, 1.0),
-              onChanged: (value) => _mutate(
-                () => _engine.setLayerOpacity(_engine.activeLayerId, value),
               ),
-            ),
-            Row(
-              children: [
-                Text('混合模式', style: theme.textTheme.titleSmall),
-                const Spacer(),
-                DropdownButton<LayerBlendMode>(
-                  key: const Key('layer-blend'),
-                  value: active.blendMode,
-                  underline: const SizedBox.shrink(),
-                  items: [
-                    for (final mode in kLayerBlendModes)
-                      DropdownMenuItem<LayerBlendMode>(
-                        value: mode,
-                        child: Text(mode.label),
-                      ),
-                  ],
-                  onChanged: (mode) {
-                    if (mode == null) return;
-                    _mutate(
-                      () => _engine.setLayerBlendMode(
-                        _engine.activeLayerId,
-                        mode,
-                      ),
-                    );
-                  },
-                ),
-              ],
-            ),
-            const SizedBox(height: 4),
-            const Divider(height: 1),
-            Align(
-              alignment: Alignment.centerLeft,
-              child: TextButton.icon(
-                key: const Key('layer-clear'),
-                onPressed: active.strokes.isEmpty ? null : _clearActiveLayer,
-                style: TextButton.styleFrom(
-                  foregroundColor: theme.colorScheme.error,
-                ),
-                icon: const Icon(Icons.layers_clear_outlined, size: 18),
-                label: const Text('清空当前图层'),
+              Row(
+                children: [
+                  Text('混合模式', style: theme.textTheme.titleSmall),
+                  const Spacer(),
+                  DropdownButton<LayerBlendMode>(
+                    key: const Key('layer-blend'),
+                    value: active.blendMode,
+                    underline: const SizedBox.shrink(),
+                    isDense: true,
+                    style: theme.textTheme.bodyMedium,
+                    items: [
+                      for (final mode in kLayerBlendModes)
+                        DropdownMenuItem<LayerBlendMode>(
+                          value: mode,
+                          child: Text(mode.label),
+                        ),
+                    ],
+                    onChanged: (mode) {
+                      if (mode == null) return;
+                      _mutate(
+                        () => _engine.setLayerBlendMode(
+                          _engine.activeLayerId,
+                          mode,
+                        ),
+                      );
+                    },
+                  ),
+                ],
               ),
-            ),
-          ],
-        ),
-      ),
+              const Divider(height: 1),
+              Align(
+                alignment: Alignment.centerLeft,
+                child: TextButton.icon(
+                  key: const Key('layer-clear'),
+                  onPressed: active.strokes.isEmpty ? null : _clearActiveLayer,
+                  style: TextButton.styleFrom(
+                    foregroundColor: theme.colorScheme.error,
+                    visualDensity: VisualDensity.compact,
+                  ),
+                  icon: const Icon(Icons.layers_clear_outlined, size: 18),
+                  label: const Text('清空当前图层'),
+                ),
+              ),
+            ],
+          ),
+        );
+      },
     );
   }
 
@@ -371,7 +409,7 @@ class _LayersSheetState extends State<LayersSheet> {
             elevation: 6,
             borderRadius: BorderRadius.circular(12),
             child: SizedBox(
-              width: MediaQuery.sizeOf(context).width * 0.82,
+              width: _feedbackWidth,
               child: _buildRowContent(
                 context,
                 layer,
@@ -401,7 +439,7 @@ class _LayersSheetState extends State<LayersSheet> {
     final active = layer.id == _engine.activeLayerId;
 
     return Padding(
-      padding: const EdgeInsets.only(bottom: 4),
+      padding: const EdgeInsets.only(bottom: 2),
       child: Material(
         color: highlighted
             ? scheme.primaryContainer.withValues(alpha: 0.75)
@@ -415,11 +453,12 @@ class _LayersSheetState extends State<LayersSheet> {
               ? () => _mutate(() => _engine.selectLayer(layer.id))
               : null,
           child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+            padding: const EdgeInsets.symmetric(horizontal: 2, vertical: 1),
             child: Row(
               children: [
                 IconButton(
                   tooltip: layer.visible ? '隐藏图层' : '显示图层',
+                  visualDensity: VisualDensity.compact,
                   onPressed: interactive
                       ? () => _mutate(
                             () => _engine.setLayerVisible(
@@ -432,7 +471,7 @@ class _LayersSheetState extends State<LayersSheet> {
                     layer.visible
                         ? Icons.visibility_outlined
                         : Icons.visibility_off_outlined,
-                    size: 20,
+                    size: 19,
                     color: layer.visible
                         ? scheme.onSurfaceVariant
                         : scheme.outline,
