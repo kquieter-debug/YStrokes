@@ -12,6 +12,7 @@ import '../models/export_destination.dart';
 import '../models/layer.dart';
 import 'document_painter.dart';
 import 'export_bridge.dart';
+import 'raster_renderer.dart';
 import 'svg_exporter.dart';
 
 /// 导出格式。
@@ -144,6 +145,10 @@ class DocumentExporter {
   /// 导出当前文档（或指定图层）。
   ///
   /// [destination] 决定写到哪里；默认走平台默认位置（Android 上即公共下载目录）。
+  ///
+  /// [rasterSource] 用于位图图层：像素到 `ui.Image` 的转换是异步的，导出前必须
+  /// 先把它准备好。导出页会把自己预热好的渲染器传进来，从而与预览共用同一份
+  /// 图像缓存；不传时这里临时建一个（例如批处理场景）。
   Future<ExportResult> export({
     required String projectName,
     required DocumentSpec document,
@@ -151,10 +156,18 @@ class DocumentExporter {
     required String activeLayerId,
     required ExportOptions options,
     ExportDestination destination = ExportDestination.platformDefault,
+    RasterTileSource? rasterSource,
   }) async {
     final selected = _selectLayers(layers, options.scope, activeLayerId);
     if (selected.isEmpty) {
       throw const ExportException('没有可导出的内容');
+    }
+
+    if (options.format == ExportFormat.svg &&
+        selected.any((layer) => layer.isRaster)) {
+      // 纯矢量导出的前提是每层都是矢量。位图内容无法用 SVG 表达，
+      // 静默丢掉它比报错更糟——用户会以为导出的就是所见。
+      throw const ExportException('含位图图层，无法导出纯矢量 SVG（请改用 PNG）');
     }
 
     if (options.format != ExportFormat.svg) {
@@ -166,18 +179,52 @@ class DocumentExporter {
       }
     }
 
+    final source = await _prepareRaster(selected, rasterSource);
     final Uint8List bytes = switch (options.format) {
       ExportFormat.svg => Uint8List.fromList(
           utf8.encode(
             buildDocumentSvg(document: document, layers: selected),
           ),
         ),
-      ExportFormat.png => await _rasterize(document, selected, options),
-      ExportFormat.jpg =>
-        await _rasterize(document, selected, options, jpeg: true),
+      ExportFormat.png => await _rasterize(document, selected, options, source),
+      ExportFormat.jpg => await _rasterize(
+          document,
+          selected,
+          options,
+          source,
+          jpeg: true,
+        ),
     };
 
     return _persist(projectName, options, bytes, destination);
+  }
+
+  /// 确保选中图层里的像素都已转成图像可画。
+  ///
+  /// 已经预热过的渲染器（导出页持有的那个）不会重复解码：`build` 在没有待办
+  /// 瓦片时直接返回。
+  Future<RasterTileSource?> _prepareRaster(
+    List<DrawingLayer> layers,
+    RasterTileSource? provided,
+  ) async {
+    if (!layers.any((layer) => layer.isRaster)) return provided;
+
+    final RasterRenderer renderer;
+    if (provided is RasterRenderer) {
+      renderer = provided;
+    } else {
+      renderer = RasterRenderer();
+      for (final layer in layers) {
+        final surface = layer.raster;
+        if (surface != null) renderer.invalidateAll(surface);
+      }
+    }
+
+    for (final layer in layers) {
+      final surface = layer.raster;
+      if (surface != null) await renderer.build(surface);
+    }
+    return renderer;
   }
 
   /// 按目标写入产物。
@@ -281,7 +328,8 @@ class DocumentExporter {
   Future<Uint8List> _rasterize(
     DocumentSpec document,
     List<DrawingLayer> layers,
-    ExportOptions options, {
+    ExportOptions options,
+    RasterTileSource? rasterSource, {
     bool jpeg = false,
   }) async {
     final width = options.width;
@@ -298,6 +346,7 @@ class DocumentExporter {
       rect,
       Color(document.backgroundArgb),
       layers,
+      rasterSource: rasterSource,
       drawPaper: !transparent,
     );
 

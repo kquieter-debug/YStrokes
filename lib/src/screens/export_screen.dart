@@ -9,6 +9,8 @@ import '../services/app_settings.dart';
 import '../services/document_painter.dart';
 import '../services/export_bridge.dart';
 import '../services/exporter.dart';
+import '../services/raster_renderer.dart';
+import '../services/raster_surface.dart';
 import '../widgets/section_card.dart';
 
 /// 导出页面。
@@ -53,6 +55,15 @@ class _ExportScreenState extends State<ExportScreen> {
   late final DocumentExporter _exporter =
       widget.exporter ?? DocumentExporter();
 
+  /// 位图图层的图像缓存。
+  ///
+  /// 预览与最终光栅化共用这一份：位图像素到 `ui.Image` 的转换是异步的，
+  /// 若各自建缓存，导出时会重复解码一遍（大画布上就是几百毫秒的卡顿）。
+  final RasterRenderer _rasterRenderer = RasterRenderer();
+
+  /// 位图是否已就绪。未就绪时预览先画矢量部分，就绪后整体重绘。
+  bool _rasterReady = false;
+
   ExportFormat _format = ExportFormat.png;
   ExportScope _scope = ExportScope.document;
   _SizePreset _preset = _SizePreset.x1;
@@ -83,11 +94,14 @@ class _ExportScreenState extends State<ExportScreen> {
   int get _baseHeight => widget.project.document.heightPx;
 
   /// 参与导出的图层：可见、非空、且符合当前范围。
+  ///
+  /// 「非空」用 `layer.isEmpty` 而不是 `strokes.isNotEmpty`：位图图层的笔画
+  /// 恒为空，用后者会把位图图层整个漏掉。
   List<DrawingLayer> get _selectedLayers => <DrawingLayer>[
         for (final layer in widget.layers)
           if (layer.visible &&
               layer.opacity > 0 &&
-              layer.strokes.isNotEmpty &&
+              !layer.isEmpty &&
               (_scope == ExportScope.document ||
                   layer.id == widget.activeLayerId))
             layer,
@@ -95,7 +109,7 @@ class _ExportScreenState extends State<ExportScreen> {
 
   /// 可见图层是否全部为矢量。含位图图层时不允许导出 SVG。
   bool get _canExportSvg => widget.layers
-      .where((layer) => layer.visible && layer.strokes.isNotEmpty)
+      .where((layer) => layer.visible && !layer.isEmpty)
       .every((layer) => layer.isVector);
 
   bool get _hasNonNormalBlend => _selectedLayers
@@ -122,6 +136,36 @@ class _ExportScreenState extends State<ExportScreen> {
     _heightController = TextEditingController(text: '$_baseHeight');
     _destination = AppSettings.exportDestination.value;
     _loadDefaultDir();
+    _prepareRaster();
+  }
+
+  /// 预热位图瓦片的图像缓存。
+  ///
+  /// 预览是同步绘制的，因此必须先把像素转成 `ui.Image`；就绪之前预览只显示
+  /// 矢量图层，完成后整体重绘一次。
+  Future<void> _prepareRaster() async {
+    final surfaces = <RasterSurface>[
+      for (final layer in widget.layers)
+        if (layer.raster != null) layer.raster!,
+    ];
+    if (surfaces.isEmpty) {
+      _rasterReady = true;
+      return;
+    }
+    for (final surface in surfaces) {
+      _rasterRenderer.invalidateAll(surface);
+    }
+    var changed = false;
+    for (final surface in surfaces) {
+      await _rasterRenderer.build(
+        surface,
+        onReady: () => changed = true,
+      );
+    }
+    if (!mounted) return;
+    if (changed || !_rasterReady) {
+      setState(() => _rasterReady = true);
+    }
   }
 
   /// 读出平台默认目录用于展示。
@@ -303,6 +347,7 @@ class _ExportScreenState extends State<ExportScreen> {
         layers: widget.layers,
         activeLayerId: widget.activeLayerId,
         destination: _destination,
+        rasterSource: _rasterRenderer,
         options: ExportOptions(
           format: _format,
           scope: _scope,
@@ -414,6 +459,7 @@ class _ExportScreenState extends State<ExportScreen> {
             layers: _selectedLayers,
             paperColor: Color(document.backgroundArgb),
             transparent: _format != ExportFormat.jpg && _transparent,
+            rasterSource: _rasterRenderer,
           ),
         ),
       ),
@@ -763,11 +809,13 @@ class _ExportPreviewPainter extends CustomPainter {
     required this.layers,
     required this.paperColor,
     required this.transparent,
+    required this.rasterSource,
   });
 
   final List<DrawingLayer> layers;
   final Color paperColor;
   final bool transparent;
+  final RasterTileSource rasterSource;
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -777,6 +825,7 @@ class _ExportPreviewPainter extends CustomPainter {
       Offset.zero & size,
       paperColor,
       layers,
+      rasterSource: rasterSource,
       drawPaper: !transparent,
     );
   }

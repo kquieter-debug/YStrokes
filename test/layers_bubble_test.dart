@@ -57,6 +57,8 @@ void main() {
             onCleared: onCleared ?? () {},
             onTransform: onTransform ?? (_) {},
             onFlip: (_, _) {},
+            onAddRaster: () {},
+            onRasterize: (_) {},
             onClose: onClose ?? () {},
           ),
         ),

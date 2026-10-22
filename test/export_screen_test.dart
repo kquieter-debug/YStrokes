@@ -10,6 +10,7 @@ import 'package:ystrokes/src/models/export_destination.dart';
 import 'package:ystrokes/src/models/layer.dart';
 import 'package:ystrokes/src/models/project.dart';
 import 'package:ystrokes/src/models/stroke.dart';
+import 'package:ystrokes/src/services/raster_renderer.dart';
 import 'package:ystrokes/src/rust/api/document.dart' show LayerBlendMode;
 import 'package:ystrokes/src/rust/api/stroke.dart' as rust;
 import 'package:ystrokes/src/rust/api/tools.dart';
@@ -70,6 +71,7 @@ class _RecordingExporter extends DocumentExporter {
     required String activeLayerId,
     required ExportOptions options,
     ExportDestination destination = ExportDestination.platformDefault,
+    RasterTileSource? rasterSource,
   }) async {
     calls++;
     lastOptions = options;

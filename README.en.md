@@ -17,12 +17,13 @@ A vector-stroke drawing app for Android, built around how a stroke actually feel
 - **Pressure-driven width**: pressure maps to width through a gamma curve (down to 25%), rendered as a per-point outline filled in one path. Canvas, thumbnails, PNG and SVG all agree. On by default for the brush, off for the eraser, and **the toggle only affects strokes drawn afterwards** — existing strokes keep the look they had when drawn.
 - **Tool settings bubble**: long-press a tool (or tap the selected one again) to open a settings panel next to the floating toolbar. Dismiss it by tapping outside — there is no confirm button.
 - **Layers bubble**: the layer panel docks to the right edge and unfolds from the top bar, applying changes immediately. No confirm button either — tap outside to collapse it.
-- **Selection and free transform**: lasso around what you want to adjust, drag inside to move, drag a corner to scale uniformly, drag the dot above the frame to rotate. One undo reverts the whole transform, and the layer panel offers the same transform for an entire layer.
+- **Selection and free transform**: lasso around what you want to adjust, drag inside to move, drag a corner to scale uniformly, drag the dot above the frame to rotate. One undo reverts the whole transform, and the layer panel offers the same transform for an entire layer. Add / subtract / invert selection, split at the selection boundary, flip, and numeric transform input are also there.
+- **Raster layers**: create one from the layer panel, or rasterize a vector layer explicitly. A pixel brush and pixel eraser paint straight into 256×256 tiles (allocated lazily); tiles are persisted as individual PNGs. Vector and raster coexist per layer.
 - **Eyedropper**: tap the canvas to pick the composited colour, then you are returned to the previous painting tool.
 - **Duplicate layer**: one tap in the layer panel puts a copy directly above the source.
 - **Nothing gets lost**: deleted projects go to a recycle bin and can be restored; every stroke is journalled on pen-up, so a kill from the system no longer costs the last stroke.
 - **Durable writes**: atomic write (temp file + rename) means a process kill never leaves a truncated document; damaged documents recover partially instead of failing outright.
-- **Undoable**: strokes, erasing, clearing, layer edits, selection deletion and transforms can all be undone, keeping the last 25 steps.
+- **Undoable**: strokes, erasing, clearing, layer edits, selection deletion, transforms, pixel strokes and rasterizing can all be undone, bounded by both step count and memory.
 - **Tools**: brush, eraser, eyedropper and lasso. Erasing is recorded as a stroke, so undo comes for free and the document never has to store a bitmap.
 - **Layers**: each layer has its own opacity, visibility and blend mode (12 Photoshop-compatible modes); layers can be renamed, reordered by dragging, and merged down. Strokes go to the active layer and are composited per layer, so erasing only affects its own layer.
 - **Viewport**: two-finger zoom / rotate / pan with a fit-to-canvas reset; stroke coordinates are mapped back through the viewport, so they stay accurate at any zoom.
@@ -127,13 +128,16 @@ Document format (all little-endian):
 
 ```
 header : "YSTK"(4) | version u16 | layer_count u32
-layer  : name_len u16 | name utf8 | opacity f32 | visible u8 | blend u8 | stroke_count u32
-stroke : id u32 | color u32 | width f32 | point_count u32 | tool u8
+layer  : name_len u16 | name utf8 | opacity f32 | visible u8 | blend u8 | kind u8 | payload
+  kind 0 (vector) : stroke_count u32 | stroke...
+  kind 1 (raster) : width u32 | height u32 | tile_size u16 | tile_count u32 | tile...
+stroke : id u32 | color u32 | width f32 | point_count u32 | tool u8 | uses_pressure u8
 point  : x f32 | y f32 | pressure f32 | timestamp_ms u32
+tile   : x u16 | y u16
 ```
 
 Coordinates are stored as f32: normalized values live in 0–1, absolute precision is about 6e-8 — far below visible error — and the payload is half the size.
-The format is v4 (layers with opacity, visibility and blend mode). The decoder accepts only the current version: the project is unreleased, so old formats are not supported — a version mismatch fails loudly instead of guessing the layout.
+The format is v6 (layers with opacity, visibility, blend mode and content kind). Raster layers carry no pixels in the document: it only lists which tiles exist, and the pixels live in `tiles/<layer>/<x>_<y>.png` next to it. The decoder accepts only the current version: the project is unreleased, so old formats are not supported — a version mismatch fails loudly instead of guessing the layout.
 
 ### Stroke processing
 

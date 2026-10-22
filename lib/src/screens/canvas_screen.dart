@@ -23,7 +23,12 @@ import '../services/drawing_engine.dart';
 import '../services/edit_journal.dart';
 import '../services/exporter.dart';
 import '../services/project_store.dart';
+import '../services/raster_brush.dart';
+import '../services/raster_renderer.dart';
+import '../services/raster_surface.dart';
+import '../services/raster_rasterizer.dart';
 import '../services/stroke_smoother.dart';
+import '../services/stroke_outline.dart';
 import '../services/transform_geometry.dart';
 import '../services/transform_session.dart';
 import '../widgets/app_icon.dart';
@@ -149,6 +154,29 @@ class _CanvasScreenState extends State<CanvasScreen>
   /// 文档在屏幕上的实际矩形（逻辑像素），所有坐标换算都以它为准。
   Rect _documentRect = Rect.zero;
 
+  // ---- 位图图层 ----
+
+  /// 位图瓦片的图像缓存与绘制。
+  ///
+  /// 画布、缩略图共用这一份：像素 → `ui.Image` 是异步的，缓存放在界面上，
+  /// 服务层只提供「怎么画」。
+  final RasterRenderer _rasterRenderer = RasterRenderer();
+
+  /// 当前像素笔「这一笔之前」的快照；非空表示正在进行像素笔画。
+  RasterSurface? _rasterBefore;
+
+  /// 像素笔上一个落点（surface 像素坐标）。
+  Offset? _rasterLastPoint;
+
+  /// 这一笔是否真的落过 dab（点一下就抬手也算）。
+  bool _rasterPainted = false;
+
+  /// 是否有一次像素刷新正在飞（避免同一帧堆叠多次解码）。
+  bool _rasterFlushing = false;
+
+  /// 栅格化进行中：期间禁止再点一次（重复点击会烘焙两次）。
+  bool _rasterizing = false;
+
   /// 视口：缩放 / 旋转 / 平移。默认「适配画布」。
   CanvasViewport _viewport = const CanvasViewport();
 
@@ -176,7 +204,17 @@ class _CanvasScreenState extends State<CanvasScreen>
   /// 已完成笔画的渲染缓存。
   ui.Picture? _committedPicture;
   int _pictureRevision = -1;
+
+  /// 缓存里的位图版本。
+  ///
+  /// 位图瓦片是异步解码的，重建时 `_engine.revision` 通常没有变化（像素不是
+  /// 笔画对象），因此必须把「图像更新到第几版」也算进缓存键，否则新瓦片永远
+  /// 画不出来。
+  int _pictureRasterRevision = -1;
   Rect _pictureRect = Rect.zero;
+
+  /// 位图图像的版本号；每次解码完成递增。
+  int _rasterRevision = 0;
 
   /// 画板私有的 SnackBar 宿主。
   ///
@@ -282,6 +320,9 @@ class _CanvasScreenState extends State<CanvasScreen>
       final stored = await _documentStore.loadDocument(widget.project.id);
       if (!mounted) return;
       _engine.load(stored.layers);
+      // 位图图层的像素刚被读进内存，图像缓存还是空的：必须显式预热一次，
+      // 否则第一帧画出来是一张白纸。
+      _invalidateAllRaster();
       final recovered = await _replayJournal();
       if (!mounted) return;
       setState(() {
@@ -388,6 +429,8 @@ class _CanvasScreenState extends State<CanvasScreen>
     } else {
       setState(() {});
     }
+    // 撤销 / 重做会整份换掉位图图层的像素：缓存必须整体失效。
+    _invalidateAllRaster();
     unawaited(_journal.clear(widget.project.id));
     _scheduleSave();
   }
@@ -402,6 +445,9 @@ class _CanvasScreenState extends State<CanvasScreen>
     if (_thumbnailBusy) return;
     _thumbnailBusy = true;
     try {
+      // 先确保位图瓦片都已转成图像：缩略图是同步绘制的，缓存没热好的话
+      // 位图内容会整块缺失，生成一张「只有矢量」的缩略图。
+      await _flushRaster();
       final bytes = await _renderThumbnailPng();
       if (bytes != null) {
         await _documentStore.saveThumbnail(widget.project.id, bytes);
@@ -434,6 +480,7 @@ class _CanvasScreenState extends State<CanvasScreen>
       rect,
       Color(document.backgroundArgb),
       _engine.layers,
+      rasterSource: _rasterRenderer,
     );
 
     final picture = recorder.endRecording();
@@ -517,6 +564,12 @@ class _CanvasScreenState extends State<CanvasScreen>
 
     _strokeStartMs = DateTime.now().millisecondsSinceEpoch;
 
+    // 位图图层走像素路径：没有点列、没有平滑器，直接往瓦片上落 dab。
+    if (_engine.activeLayer.isRaster) {
+      _beginRasterStroke(e.localPosition, e.pressure);
+      return;
+    }
+
     final smoother = StrokeSmoother(
       shortestSide: _documentRect.shortestSide,
       window: _profile.smoothWindow,
@@ -526,6 +579,185 @@ class _CanvasScreenState extends State<CanvasScreen>
       _smoother = smoother;
       _activeRevision++;
     });
+  }
+
+  /// 屏幕坐标 → 位图像素坐标。
+  ///
+  /// 与笔画共用 `_localToNormalizedRaw`，因此视口缩放/旋转对像素笔的影响与
+  /// 矢量笔完全一致——两条路径不该有第二套坐标换算。
+  Offset _toRasterPixel(Offset local, RasterSurface surface) {
+    final normalized = _localToNormalizedRaw(local);
+    // 超出画布的部分夹到边缘外一点点即可：dab 本来就会被瓦片边界裁掉，
+    // 但放任一个巨大的坐标会让包围盒循环空转。
+    return Offset(
+      normalized.dx.clamp(-0.25, 1.25) * surface.width,
+      normalized.dy.clamp(-0.25, 1.25) * surface.height,
+    );
+  }
+
+  /// 当前像素笔的半径（surface 像素）。
+  ///
+  /// 笔宽在文档空间按**短边**归一化（与矢量一致），压感开关打开时乘上同一个
+  /// `pressureWidthFactor`——两条路径的粗细手感必须一样，否则切图层会突变。
+  double _rasterRadius(RasterSurface surface, double pressure) {
+    final shortestSide =
+        math.min(surface.width, surface.height).toDouble();
+    var width = strokeWidthPx(_paintSettings.widthRatio, shortestSide);
+    if (_paintSettings.pressureEnabled) {
+      width *= pressureWidthFactor(pressure);
+    }
+    return math.max(0.5, width / 2);
+  }
+
+  void _beginRasterStroke(Offset local, double pressure) {
+    final surface = _engine.activeLayer.raster;
+    if (surface == null) return;
+    final before = _engine.beginRasterStroke();
+    if (before == null) return;
+
+    _rasterBefore = before;
+    _rasterPainted = false;
+    final point = _toRasterPixel(local, surface);
+    _rasterLastPoint = point;
+
+    final touched = RasterBrush.dab(
+      surface,
+      center: point,
+      radius: _rasterRadius(surface, pressure),
+      colorArgb: _paintSettings.color.toARGB32(),
+      erase: _tool.strokeKind == ToolKind.eraser,
+    );
+    _rasterPainted = true;
+    _rasterRenderer.invalidateTiles(surface, touched);
+    unawaited(_flushRaster());
+  }
+
+  void _extendRasterStroke(Offset local, double pressure) {
+    final surface = _engine.activeLayer.raster;
+    final last = _rasterLastPoint;
+    if (surface == null || last == null) return;
+
+    final point = _toRasterPixel(local, surface);
+    if ((point - last).distance < 0.01) return;
+
+    final touched = RasterBrush.strokeSegment(
+      surface,
+      from: last,
+      to: point,
+      radius: _rasterRadius(surface, pressure),
+      colorArgb: _paintSettings.color.toARGB32(),
+      erase: _tool.strokeKind == ToolKind.eraser,
+    );
+    _rasterLastPoint = point;
+    _rasterPainted = true;
+    _rasterRenderer.invalidateTiles(surface, touched);
+    unawaited(_flushRaster());
+  }
+
+  /// 提交像素笔。
+  ///
+  /// 像素内容在绘制过程中就已经写进 surface 了，这里只补一条撤销记录，
+  /// 并触发一次落盘。`_rasterPainted` 为假（例如按下即被系统打断）时不入栈。
+  void _commitRasterStroke() {
+    final before = _rasterBefore;
+    _rasterBefore = null;
+    _rasterLastPoint = null;
+    final painted = _rasterPainted;
+    _rasterPainted = false;
+    if (before == null || !painted) return;
+
+    final committed = _engine.commitRasterStroke(before);
+    if (!committed) return;
+    setState(() {});
+    _scheduleSave();
+  }
+
+  /// 丢弃这一笔（手势被系统打断）。像素已经写进 surface，必须换回快照。
+  void _abortRasterStroke() {
+    final before = _rasterBefore;
+    _rasterBefore = null;
+    _rasterLastPoint = null;
+    _rasterPainted = false;
+    final surface = _engine.activeLayer.raster;
+    if (before == null || surface == null) return;
+    _engine.activeLayer.raster = before;
+    _rasterRenderer.invalidateAll(before);
+    unawaited(_flushRaster());
+    setState(() {});
+  }
+
+  /// 把待办瓦片解码成图像，完成后重绘一次。
+  ///
+  /// 解码期间不阻塞输入：新一轮 dab 只会往待办集合里追加，由渲染器内部
+  /// 合并成一次补跑。
+  Future<void> _flushRaster() async {
+    if (_rasterFlushing) return;
+    _rasterFlushing = true;
+    var changed = false;
+    try {
+      for (final layer in _engine.layers) {
+        final surface = layer.raster;
+        if (surface == null) continue;
+        await _rasterRenderer.build(surface, onReady: () => changed = true);
+      }
+    } finally {
+      _rasterFlushing = false;
+    }
+    if (changed && mounted) {
+      setState(() {
+        _rasterRevision++;
+        _activeRevision++;
+      });
+    }
+  }
+
+  /// 标记全部位图图层待重建（撤销 / 重做 / 栅格化之后调用）。
+  void _invalidateAllRaster() {
+    for (final layer in _engine.layers) {
+      final surface = layer.raster;
+      if (surface != null) _rasterRenderer.invalidateAll(surface);
+    }
+    unawaited(_flushRaster());
+  }
+
+  /// 把矢量图层烘焙成像素。
+  ///
+  /// 破坏性：原笔画被像素取代，画完之后不能再调笔宽。因此它必须是用户显式
+  /// 触发的一次动作（ADR-027 明确不做隐式栅格化），而且进撤销栈，
+  /// 会话内仍可反悔。
+  Future<void> _rasterizeLayer(String layerId) async {
+    if (_rasterizing) return;
+    DrawingLayer? target;
+    for (final layer in _engine.layers) {
+      if (layer.id == layerId) target = layer;
+    }
+    // 渲染期间会 await，必须先确认对象还在，且内容还是矢量的。
+    if (target == null || target.isRaster || target.isEmpty) return;
+
+    final document = widget.project.document;
+    setState(() => _rasterizing = true);
+    try {
+      final pixels = await RasterRasterizer.rasterizeLayer(
+        target,
+        width: document.widthPx,
+        height: document.heightPx,
+      );
+      if (!mounted) return;
+      if (!_engine.replaceWithPixels(layerId, pixels)) return;
+
+      _rasterRenderer.invalidateAll(pixels);
+      unawaited(_flushRaster());
+      setState(() {});
+      // 图层内容类型变了，崩溃日志里的「第几层 + 笔画」不再适用。
+      unawaited(_journal.clear(widget.project.id));
+      _scheduleSave();
+      _showHint('已栅格化「${target.name}」，会话内可撤销');
+    } catch (error) {
+      if (!mounted) return;
+      _showHint('栅格化失败：$error', duration: const Duration(seconds: 3));
+    } finally {
+      if (mounted) setState(() => _rasterizing = false);
+    }
   }
 
   void _onPointerMove(PointerMoveEvent e) {
@@ -543,6 +775,11 @@ class _CanvasScreenState extends State<CanvasScreen>
       return;
     }
     if (_tool == CanvasTool.eyedropper) return;
+
+    if (_rasterBefore != null) {
+      _extendRasterStroke(e.localPosition, e.pressure);
+      return;
+    }
 
     final smoother = _smoother;
     if (smoother == null) return;
@@ -580,6 +817,11 @@ class _CanvasScreenState extends State<CanvasScreen>
 
     if (e.pointer != _activePointer) return;
     _activePointer = null;
+
+    if (_rasterBefore != null) {
+      _commitRasterStroke();
+      return;
+    }
     final smoother = _smoother;
     if (smoother == null) {
       setState(() => _smoother = null);
@@ -639,6 +881,7 @@ class _CanvasScreenState extends State<CanvasScreen>
       _smoother = null;
       _activeRevision++;
     });
+    _abortRasterStroke();
   }
 
   /// 开始双指变换：记录基线，丢弃当前未完成的笔画。
@@ -655,6 +898,9 @@ class _CanvasScreenState extends State<CanvasScreen>
       _smoother = null;
       _activeRevision++;
     }
+    // 第二根手指落下时，进行中的像素笔画按「取消」处理：
+    // 双指手势不是画画的意图，半截像素不该留下。
+    _abortRasterStroke();
     setState(() {});
   }
 
@@ -829,6 +1075,19 @@ class _CanvasScreenState extends State<CanvasScreen>
           setState(() {});
           unawaited(_journal.clear(widget.project.id));
           _scheduleSave();
+        },
+        onAddRaster: () {
+          final document = widget.project.document;
+          _engine.addRasterLayer(
+            width: document.widthPx,
+            height: document.heightPx,
+          );
+          setState(() {});
+          unawaited(_journal.clear(widget.project.id));
+          _scheduleSave();
+        },
+        onRasterize: (layerId) {
+          unawaited(_rasterizeLayer(layerId));
         },
         onTransform: (layerId) {
           Navigator.of(dialogContext).pop();
@@ -1276,6 +1535,14 @@ class _CanvasScreenState extends State<CanvasScreen>
   /// 套索工具下的按下：先判手柄，再判移动，最后才是「重新起一个选区」。
   void _beginSelectionPointer(Offset local) {
     _dragStartLocal = local;
+
+    // 位图图层的选区语义是**像素蒙版**，不是「整笔命中」。那套能力还没做，
+    // 与其让他圈出一个只会移动 0 条笔画的框，不如明确说清楚。
+    if (_engine.activeLayer.isRaster) {
+      _showHint('位图图层暂不支持套索选区');
+      return;
+    }
+
     final session = _session;
 
     // 加选/减选要合并的「旧选区」必须在**按下这一刻**记下来：下面框外按下会把旧会话
@@ -1749,6 +2016,7 @@ class _CanvasScreenState extends State<CanvasScreen>
                   viewport: _viewport,
                   activeBlend: _engine.activeLayer.blendMode,
                   activePressure: _paintSettings.pressureEnabled,
+                  rasterSource: _rasterRenderer,
                 ),
               ),
               // 选区与变换框画在内容之上、指针层之下：它们不参与命中，
@@ -1776,6 +2044,7 @@ class _CanvasScreenState extends State<CanvasScreen>
     final cached = _committedPicture;
     if (cached != null &&
         _pictureRevision == _engine.revision &&
+        _pictureRasterRevision == _rasterRevision &&
         _pictureRect == rect) {
       return cached;
     }
@@ -1789,11 +2058,13 @@ class _CanvasScreenState extends State<CanvasScreen>
         rect,
         Color(widget.project.document.backgroundArgb),
         _engine.layers,
+        rasterSource: _rasterRenderer,
       );
     }
     final picture = recorder.endRecording();
     _committedPicture = picture;
     _pictureRevision = _engine.revision;
+    _pictureRasterRevision = _rasterRevision;
     _pictureRect = rect;
     return picture;
   }
@@ -1822,6 +2093,7 @@ class _CanvasPainter extends CustomPainter {
     required this.viewport,
     required this.activeBlend,
     required this.activePressure,
+    required this.rasterSource,
   });
 
   final ui.Picture picture;
@@ -1840,6 +2112,10 @@ class _CanvasPainter extends CustomPainter {
 
   /// 活动笔画是否按压感绘制（取当前工具的开关）。
   final bool activePressure;
+
+  /// 位图图层的图像来源。只在「擦除中整篇重绘」这条路径上用到——
+  /// 常规路径已经把位图画进 [picture] 缓存了。
+  final RasterTileSource rasterSource;
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -1863,6 +2139,7 @@ class _CanvasPainter extends CustomPainter {
         rect,
         paperColor,
         layers,
+        rasterSource: rasterSource,
         activeLayerId: activeLayerId,
         activePoints: activePoints,
         activeColor: activeColor,

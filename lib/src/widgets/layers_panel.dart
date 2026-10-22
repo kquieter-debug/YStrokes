@@ -29,6 +29,8 @@ class LayersPanel extends StatefulWidget {
     required this.onCleared,
     required this.onTransform,
     required this.onFlip,
+    required this.onAddRaster,
+    required this.onRasterize,
   });
 
   final DrawingEngine engine;
@@ -47,6 +49,12 @@ class LayersPanel extends StatefulWidget {
 
   /// 翻转整层：`(layerId, 是否水平)`。与变换不同，它一步到位，不进交互模式。
   final void Function(String layerId, bool horizontal) onFlip;
+
+  /// 新建位图图层。尺寸来自文档，只有画板知道，因此由画板执行。
+  final VoidCallback onAddRaster;
+
+  /// 栅格化指定图层（矢量 → 像素）。渲染是异步的，由画板执行。
+  final ValueChanged<String> onRasterize;
 
   @override
   State<LayersPanel> createState() => _LayersPanelState();
@@ -213,16 +221,17 @@ class _LayersPanelState extends State<LayersPanel> {
   /// 「以为自己删错了」的一整轮慌乱，因此仍然要求确认。
   Future<void> _clearActiveLayer() async {
     final layer = _engine.activeLayer;
-    if (layer.strokes.isEmpty) return;
+    if (layer.isEmpty) return;
+
+    final detail = layer.isRaster
+        ? '将清空「${layer.name}」的全部像素。'
+        : '将清空「${layer.name}」的 ${layer.strokes.length} 笔内容。';
 
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (dialogContext) => AlertDialog(
         title: const Text('清空图层'),
-        content: Text(
-          '将清空「${layer.name}」的 ${layer.strokes.length} 笔内容。\n'
-          '此操作可以通过撤销恢复。',
-        ),
+        content: Text('$detail\n此操作可以通过撤销恢复。'),
         actions: [
           TextButton(
             onPressed: () => Navigator.of(dialogContext).pop(false),
@@ -286,11 +295,27 @@ class _LayersPanelState extends State<LayersPanel> {
                     ),
                   ),
                   const Spacer(),
-                  IconButton(
+                  PopupMenuButton<String>(
                     key: const Key('layer-add'),
                     tooltip: '新建图层',
-                    visualDensity: VisualDensity.compact,
-                    onPressed: () => _mutate(_engine.addLayer),
+                    onSelected: (action) {
+                      if (action == 'vector') {
+                        _mutate(_engine.addLayer);
+                      } else if (action == 'raster') {
+                        widget.onAddRaster();
+                        setState(() {});
+                      }
+                    },
+                    itemBuilder: (context) => const [
+                      PopupMenuItem<String>(
+                        value: 'vector',
+                        child: Text('矢量图层'),
+                      ),
+                      PopupMenuItem<String>(
+                        value: 'raster',
+                        child: Text('位图图层'),
+                      ),
+                    ],
                     icon: const Icon(Icons.add),
                   ),
                 ],
@@ -387,10 +412,23 @@ class _LayersPanelState extends State<LayersPanel> {
     );
   }
 
+  /// 列表行的第二行摘要。
+  ///
+  /// 位图图层没有「笔」，用尺寸代替；两种类型都显示不透明度与混合模式。
+  String _subtitle(DrawingLayer layer) {
+    final head = layer.isRaster
+        ? '位图 ${layer.raster!.width}×${layer.raster!.height}'
+        : '${layer.strokes.length} 笔';
+    final blend = layer.blendMode.isNormal ? '' : ' · ${layer.blendMode.label}';
+    return '$head · ${(layer.opacity * 100).round()}%$blend';
+  }
+
   Widget _buildRow(BuildContext context, DrawingLayer layer) {
     final index = _engine.layers.indexWhere((item) => item.id == layer.id);
     final canDelete = _engine.layers.length > 1;
-    final canMerge = index > 0;
+    // 「能否向下合并」不只是「不是最底层」：位图图层参与合并就等于隐式栅格化，
+    // 因此判定交给引擎，UI 只读结论。
+    final canMerge = _engine.canMergeDown(layer.id);
 
     return DragTarget<String>(
       key: ValueKey<String>(layer.id),
@@ -402,6 +440,7 @@ class _LayersPanelState extends State<LayersPanel> {
         final content = _buildRowContent(
           context,
           layer,
+          index: index,
           canDelete: canDelete,
           canMerge: canMerge,
           highlighted: candidateData.isNotEmpty,
@@ -421,6 +460,7 @@ class _LayersPanelState extends State<LayersPanel> {
               child: _buildRowContent(
                 context,
                 layer,
+                index: index,
                 canDelete: canDelete,
                 canMerge: canMerge,
                 interactive: false,
@@ -437,6 +477,7 @@ class _LayersPanelState extends State<LayersPanel> {
   Widget _buildRowContent(
     BuildContext context,
     DrawingLayer layer, {
+    required int index,
     required bool canDelete,
     required bool canMerge,
     bool highlighted = false,
@@ -501,9 +542,7 @@ class _LayersPanelState extends State<LayersPanel> {
                         ),
                       ),
                       Text(
-                        '${layer.strokes.length} 笔 · '
-                        '${(layer.opacity * 100).round()}%'
-                        '${layer.blendMode.isNormal ? '' : ' · ${layer.blendMode.label}'}',
+                        _subtitle(layer),
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
                         style: theme.textTheme.bodySmall?.copyWith(
@@ -529,6 +568,9 @@ class _LayersPanelState extends State<LayersPanel> {
                           widget.onFlip(layer.id, true);
                         case 'flip-v':
                           widget.onFlip(layer.id, false);
+                        case 'rasterize':
+                          widget.onRasterize(layer.id);
+                          setState(() {});
                         case 'merge':
                           _mergeDown(layer);
                         case 'delete':
@@ -547,23 +589,36 @@ class _LayersPanelState extends State<LayersPanel> {
                       PopupMenuItem<String>(
                         value: 'transform',
                         // 空图层没有可变换的内容，置灰比让他点一下才知道更省事。
-                        enabled: layer.strokes.isNotEmpty,
+                        // 位图图层的变换是像素重采样，属于图层矩阵那一批，暂不支持。
+                        enabled: layer.isVector && !layer.isEmpty,
                         child: const Text('变换图层'),
                       ),
                       PopupMenuItem<String>(
                         value: 'flip-h',
-                        enabled: layer.strokes.isNotEmpty,
+                        enabled: layer.isVector && !layer.isEmpty,
                         child: const Text('水平翻转'),
                       ),
                       PopupMenuItem<String>(
                         value: 'flip-v',
-                        enabled: layer.strokes.isNotEmpty,
+                        enabled: layer.isVector && !layer.isEmpty,
                         child: const Text('垂直翻转'),
+                      ),
+                      PopupMenuItem<String>(
+                        value: 'rasterize',
+                        // 只对非空矢量图层开放：这已经是像素图的层没有可烘焙的东西。
+                        enabled: layer.isVector && !layer.isEmpty,
+                        child: const Text('栅格化为位图'),
                       ),
                       PopupMenuItem<String>(
                         value: 'merge',
                         enabled: canMerge,
-                        child: Text(canMerge ? '向下合并' : '已在最底层'),
+                        child: Text(
+                          canMerge
+                              ? '向下合并'
+                              : index <= 0
+                                  ? '已在最底层'
+                                  : '位图图层不支持合并',
+                        ),
                       ),
                       PopupMenuItem<String>(
                         value: 'delete',

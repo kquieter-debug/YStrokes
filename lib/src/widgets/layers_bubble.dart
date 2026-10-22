@@ -22,6 +22,8 @@ class LayersBubble extends StatelessWidget {
     required this.onCleared,
     required this.onTransform,
     required this.onFlip,
+    required this.onAddRaster,
+    required this.onRasterize,
     required this.onClose,
     this.animation,
   });
@@ -42,6 +44,12 @@ class LayersBubble extends StatelessWidget {
 
   /// 翻转整层：`(layerId, 是否水平)`。
   final void Function(String layerId, bool horizontal) onFlip;
+
+  /// 新建位图图层（尺寸来自文档，由画板决定）。
+  final VoidCallback onAddRaster;
+
+  /// 栅格化指定图层（异步渲染，由画板执行）。
+  final ValueChanged<String> onRasterize;
 
   final VoidCallback onClose;
 
@@ -94,6 +102,8 @@ class LayersBubble extends StatelessWidget {
                   onCleared: onCleared,
                   onTransform: onTransform,
                   onFlip: onFlip,
+                  onAddRaster: onAddRaster,
+                  onRasterize: onRasterize,
                 ),
               ),
             ),

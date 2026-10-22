@@ -6,6 +6,7 @@ import '../rust/api/document.dart' show LayerBlendMode;
 import '../models/stroke.dart';
 import '../rust/api/stroke.dart' as rust;
 import '../rust/api/tools.dart';
+import 'raster_surface.dart';
 import 'transform_geometry.dart';
 
 /// 画板引擎：管理图层、笔画与撤销/重做栈。
@@ -36,6 +37,17 @@ class DrawingEngine {
   /// 因为弹窗打断绘画比少一步历史更烦人。
   static const int maxUndoSteps = 25;
 
+  /// 撤销历史的**字节**上限（D4 的「双闸」）。
+  ///
+  /// 位图快照的成本与步数无关：一次涂满全层的一笔可能值 8 MB，25 步就是 200 MB。
+  /// 因此除了步数，还要按估算字节数封顶。64 MB 的依据是「一台中端手机
+  /// 可以承受的常驻内存」，而不是任何理论值。
+  ///
+  /// 裁剪顺序永远是**最旧优先**：刚做完的那一步一定会被保住
+  /// （循环条件里带 `length > 1`），否则「撤销一下刚才的操作」会失败——
+  /// 那比少几步历史严重得多。
+  static const int maxUndoBytes = 64 * 1024 * 1024;
+
   String _activeLayerId = '';
   int _nextLayerSeq = 0;
   int _nextStrokeId = 0;
@@ -61,10 +73,14 @@ class DrawingEngine {
   bool get canRedo => _redoStack.isNotEmpty;
 
   /// 所有图层都没有内容。
-  bool get isEmpty => _layers.every((layer) => layer.strokes.isEmpty);
+  bool get isEmpty => _layers.every((layer) => layer.isEmpty);
 
   int get strokeCount =>
       _layers.fold<int>(0, (sum, layer) => sum + layer.strokes.length);
+
+  /// 位图图层占用的像素字节总量（诊断与预算用）。
+  int get pixelByteSize =>
+      _layers.fold<int>(0, (sum, layer) => sum + layer.pixelByteSize);
 
   /// 载入已持久化的图层，重置撤销/重做历史。
   ///
@@ -125,6 +141,77 @@ class DrawingEngine {
     return stroke;
   }
 
+  // ---- 位图图层 ----
+
+  /// 新建位图图层并选中它。
+  ///
+  /// 尺寸必须等于文档尺寸：D1 决定不做超采样，因此位图分辨率的上限就是画布上限。
+  /// 调用方（画布）持有 `DocumentSpec`，引擎不重复知道文档尺寸。
+  DrawingLayer addRasterLayer({
+    required int width,
+    required int height,
+    String? name,
+  }) {
+    final layer = DrawingLayer(
+      id: 'layer-${_nextLayerSeq++}',
+      name: name ?? '位图 ${_layers.length + 1}',
+      raster: RasterSurface(width: width, height: height),
+    );
+    final index = _layers.indexWhere((item) => item.id == _activeLayerId);
+    final insertAt = index < 0 ? _layers.length : index + 1;
+    final previousActive = _activeLayerId;
+
+    _layers.insert(insertAt, layer);
+    _activeLayerId = layer.id;
+    _pushEdit(_AddLayerEdit(layer, insertAt, previousActive));
+    _revision++;
+    return layer;
+  }
+
+  /// 开始一笔像素笔：返回「这笔之前」的快照。
+  ///
+  /// 当前图层不是位图时返回 null，调用方据此回落到矢量路径。
+  /// 快照是写时复制的，成本是一次小 map 拷贝，与画布面积无关。
+  RasterSurface? beginRasterStroke() {
+    final surface = activeLayer.raster;
+    if (surface == null) return null;
+    return surface.fork();
+  }
+
+  /// 提交一笔像素笔：把「快照 → 当前」记为一条撤销记录。
+  ///
+  /// 这里必须再 fork 一次冻结结果：直接拿活对象当 `after`，后续笔画会继续
+  /// 改同一张表，等到重做时拿到的是「以后来的样子」。
+  bool commitRasterStroke(RasterSurface before) {
+    final layer = activeLayer;
+    final surface = layer.raster;
+    if (surface == null) return false;
+
+    final after = surface.fork();
+    _pushEdit(_ReplaceRasterEdit(layer.id, before, after));
+    _revision++;
+    return true;
+  }
+
+  /// 把某图层的内容整体替换为像素——**栅格化的落地点**。
+  ///
+  /// 原笔画的点列被保留在撤销记录里，因此会话内仍可反悔；落盘之后是否还有
+  /// 退路由「手动保存 / 离开工程结算」决定（D2），不在本方法职责内。
+  bool replaceWithPixels(String layerId, RasterSurface pixels) {
+    final layer = _layerById(layerId);
+    if (layer == null) return false;
+
+    final beforeStrokes = List<Stroke>.of(layer.strokes);
+    final beforeSurface = layer.raster;
+    if (beforeStrokes.isEmpty && beforeSurface == null) return false;
+
+    layer.strokes.clear();
+    layer.raster = pixels;
+    _pushEdit(_RasterizeEdit(layerId, beforeStrokes, beforeSurface, pixels));
+    _revision++;
+    return true;
+  }
+
   // ---- 图层操作 ----
 
   /// 在当前图层上方新建图层并选中它。
@@ -179,6 +266,9 @@ class DrawingEngine {
       opacity: source.opacity,
       visible: source.visible,
       blendMode: source.blendMode,
+      // 位图图层用写时复制：副本与源共享像素，任一方开始画才分裂。
+      // 整份深拷贝会在几十 MB 量级上卡住一次点击。
+      raster: source.raster?.fork(),
       strokes: <Stroke>[
         for (final stroke in source.strokes)
           Stroke(
@@ -259,6 +349,17 @@ class DrawingEngine {
     return true;
   }
 
+  /// 是否可以把该图层向下合并。
+  ///
+  /// 位图图层不支持「合并向下」：像素只能重采样到另一个像素图层，
+  /// 合并进矢量层意味着隐式栅格化——那正是我们明确拒绝的行为（ADR-027）。
+  /// UI 用这个判断来决定菜单项是否可用。
+  bool canMergeDown(String id) {
+    final index = _layers.indexWhere((layer) => layer.id == id);
+    if (index <= 0) return false;
+    return _layers[index].isVector && _layers[index - 1].isVector;
+  }
+
   /// 向下合并：把指定图层并入它下方那一层。
   ///
   /// 合并结果**沿用下方图层的合成参数**（不透明度 / 混合模式 / 名称），
@@ -266,10 +367,11 @@ class DrawingEngine {
   /// 后者可以烘焙像素，而矢量笔画无法在保留可编辑性的前提下烘焙混合效果。
   /// 调用方应在丢弃非默认参数前向用户确认。
   ///
-  /// 已在最底层时返回 null。
+  /// 已在最底层、或任一侧是位图图层时返回 null。
   DrawingLayer? mergeDown(String id) {
     final index = _layers.indexWhere((layer) => layer.id == id);
     if (index <= 0) return null;
+    if (!canMergeDown(id)) return null;
 
     final upper = _layers[index];
     final lower = _layers[index - 1];
@@ -325,11 +427,15 @@ class DrawingEngine {
   ///
   /// 按图层下标定位、按笔画 id 去重：日志只覆盖「最后一次完整保存之后」的增量，
   /// 但清空日志本身也可能被打断，因此重放时必须容忍重复。
+  ///
+  /// 位图图层直接跳过：日志里没有像素，往位图图层里塞笔画会立刻破坏
+  /// 「两种内容二选一」的不变量。
   int restoreStrokes(Map<int, List<Stroke>> byLayer) {
     var added = 0;
     for (final entry in byLayer.entries) {
       if (entry.key < 0 || entry.key >= _layers.length) continue;
       final layer = _layers[entry.key];
+      if (layer.isRaster) continue;
       final existing = layer.strokes.map((stroke) => stroke.id).toSet();
       for (final stroke in entry.value) {
         if (!existing.add(stroke.id)) continue;
@@ -354,9 +460,12 @@ class DrawingEngine {
   ///
   /// 直接烘焙进点坐标，而不是给图层加一层矩阵：矢量文档里的 SVG 导出与
   /// 命中测试都按「坐标即真相」工作，多一层矩阵会让这两处都要学会换算。
+  ///
+  /// 位图图层返回 false：像素翻转需要重采样或矩阵，属于图层矩阵那一批（ROADMAP R34），
+  /// 现阶段宁可明确「不支持」，也不做半吊子的点集翻转。
   bool flipLayer(String layerId, {required bool horizontal}) {
     final layer = _layerById(layerId);
-    if (layer == null || layer.strokes.isEmpty) return false;
+    if (layer == null || layer.isRaster || layer.strokes.isEmpty) return false;
 
     final before = List<Stroke>.of(layer.strokes);
     final after = transformStrokes(
@@ -487,22 +596,46 @@ class DrawingEngine {
     return removed.length;
   }
 
-  /// 入栈并裁剪到上限。
+  /// 入栈并按「步数 + 字节」双闸裁剪。
   ///
   /// 所有编辑都必须走这里：早期各方法各自 `_undoStack.add(...)` + `_redoStack.clear()`，
   /// 加上限时漏一处就会让上限形同虚设。
   void _pushEdit(_Edit edit) {
     _undoStack.add(edit);
     _redoStack.clear();
-    if (_undoStack.length > maxUndoSteps) {
-      _undoStack.removeRange(0, _undoStack.length - maxUndoSteps);
+
+    while (_undoStack.length > maxUndoSteps) {
+      _undoStack.removeAt(0);
+    }
+
+    // 字节闸：从最旧的一端丢，直到回到预算内。
+    // 保留至少一条——刚做完的那一步必须可撤销，否则「反悔」这个能力本身就失效了。
+    var bytes = _undoStack.fold<int>(0, (sum, item) => sum + item.approxBytes);
+    while (bytes > maxUndoBytes && _undoStack.length > 1) {
+      bytes -= _undoStack.removeAt(0).approxBytes;
     }
   }
 
   /// 清空当前图层。此操作可撤销——误触清空不应造成不可逆损失。
   bool clear() {
     final layer = activeLayer;
-    if (layer.strokes.isEmpty) return false;
+    if (layer.isEmpty) return false;
+
+    final surface = layer.raster;
+    if (surface != null) {
+      // 位图图层「清空」= 换一张空白 surface，而不是逐像素填 0：
+      // 后者要为整层分配瓦片，前者只是丢引用。
+      final blank = RasterSurface(
+        width: surface.width,
+        height: surface.height,
+        tileSize: surface.tileSize,
+      );
+      layer.raster = blank;
+      _pushEdit(_ReplaceRasterEdit(layer.id, surface, blank));
+      _revision++;
+      return true;
+    }
+
     _pushEdit(_ClearLayerEdit(layer.id, List<Stroke>.of(layer.strokes)));
     layer.strokes.clear();
     _revision++;
@@ -538,9 +671,86 @@ class DrawingEngine {
 abstract class _Edit {
   void undo(DrawingEngine engine);
   void redo(DrawingEngine engine);
+
+  /// 估算该记录常驻内存的字节数，用于撤销预算。
+  ///
+  /// 矢量记录只持有引用（笔画对象本来就在图层里共享），因此按 0 计；
+  /// 位图快照才是真正的大头，由具体记录覆盖。
+  int get approxBytes => 0;
 }
 
-class _AddStrokeEdit implements _Edit {
+/// 替换一个位图图层的像素内容。
+///
+/// 记的是**两份快照**而不是「一次操作」：像素没有可重放的语义，
+/// 撤销只能靠换回旧图。因为快照是写时复制的，两份共享大部分瓦片，
+/// `approxBytes` 相加偏保守——预算宁可紧一点。
+class _ReplaceRasterEdit implements _Edit {
+  _ReplaceRasterEdit(this.layerId, this.before, this.after);
+
+  final String layerId;
+  final RasterSurface before;
+  final RasterSurface after;
+
+  @override
+  int get approxBytes => before.allocatedByteSize + after.allocatedByteSize;
+
+  @override
+  void undo(DrawingEngine engine) {
+    final layer = engine._layerById(layerId);
+    if (layer == null) return;
+    layer.raster = before;
+    // 换回旧内容后，磁盘上的像素与内存不一致且无法推断差在哪：
+    // 全量重写是唯一安全的选择。
+    before.markAllDirty();
+  }
+
+  @override
+  void redo(DrawingEngine engine) {
+    final layer = engine._layerById(layerId);
+    if (layer == null) return;
+    layer.raster = after;
+    after.markAllDirty();
+  }
+}
+
+/// 栅格化：把矢量内容换成像素（或把像素换成另一份像素）。
+///
+/// 撤销要恢复**笔画**，因此记录里同时保留原笔画点列与像素。
+class _RasterizeEdit implements _Edit {
+  _RasterizeEdit(this.layerId, this.beforeStrokes, this.beforeSurface, this.after);
+
+  final String layerId;
+  final List<Stroke> beforeStrokes;
+  final RasterSurface? beforeSurface;
+  final RasterSurface after;
+
+  @override
+  int get approxBytes => after.allocatedByteSize + (beforeSurface?.allocatedByteSize ?? 0);
+
+  @override
+  void undo(DrawingEngine engine) {
+    final layer = engine._layerById(layerId);
+    if (layer == null) return;
+    layer.raster = beforeSurface;
+    if (beforeSurface == null) {
+      layer.strokes
+        ..clear()
+        ..addAll(beforeStrokes);
+    }
+    beforeSurface?.markAllDirty();
+  }
+
+  @override
+  void redo(DrawingEngine engine) {
+    final layer = engine._layerById(layerId);
+    if (layer == null) return;
+    layer.strokes.clear();
+    layer.raster = after;
+    after.markAllDirty();
+  }
+}
+
+class _AddStrokeEdit extends _Edit {
   _AddStrokeEdit(this.layerId, this.stroke);
 
   final String layerId;
@@ -563,7 +773,7 @@ class _AddStrokeEdit implements _Edit {
   }
 }
 
-class _ClearLayerEdit implements _Edit {
+class _ClearLayerEdit extends _Edit {
   _ClearLayerEdit(this.layerId, this.removed);
 
   final String layerId;
@@ -580,7 +790,7 @@ class _ClearLayerEdit implements _Edit {
   }
 }
 
-class _AddLayerEdit implements _Edit {
+class _AddLayerEdit extends _Edit {
   _AddLayerEdit(this.layer, this.index, this.previousActiveId);
 
   final DrawingLayer layer;
@@ -602,7 +812,7 @@ class _AddLayerEdit implements _Edit {
 }
 
 /// 重命名图层。
-class _RenameLayerEdit implements _Edit {
+class _RenameLayerEdit extends _Edit {
   _RenameLayerEdit(this.layerId, this.previousName, this.nextName);
 
   final String layerId;
@@ -623,7 +833,7 @@ class _RenameLayerEdit implements _Edit {
 }
 
 /// 移动图层位置。
-class _MoveLayerEdit implements _Edit {
+class _MoveLayerEdit extends _Edit {
   _MoveLayerEdit(this.fromIndex, this.toIndex);
 
   final int fromIndex;
@@ -643,7 +853,7 @@ class _MoveLayerEdit implements _Edit {
 }
 
 /// 向下合并。
-class _MergeDownEdit implements _Edit {
+class _MergeDownEdit extends _Edit {
   _MergeDownEdit({
     required this.lowerId,
     required this.upperLayer,
@@ -679,7 +889,7 @@ class _MergeDownEdit implements _Edit {
   }
 }
 
-class _RemoveLayerEdit implements _Edit {
+class _RemoveLayerEdit extends _Edit {
   _RemoveLayerEdit(this.layer, this.index, this.previousActiveId);
 
   final DrawingLayer layer;
@@ -707,7 +917,7 @@ class _RemoveLayerEdit implements _Edit {
 ///
 /// 与 `_ClearLayerEdit` 的区别在于它是「替换」而不是「清空+添加」：
 /// 变换后笔画数量不变、但每个点的坐标都变了，按 id 逐笔对账反而更容易出错。
-class _ReplaceStrokesEdit implements _Edit {
+class _ReplaceStrokesEdit extends _Edit {
   _ReplaceStrokesEdit(this.layerId, this.before, this.after);
 
   final String layerId;
@@ -730,7 +940,7 @@ class _ReplaceStrokesEdit implements _Edit {
 }
 
 /// 按 id 删除若干笔画（选区删除）。
-class _RemoveStrokesEdit implements _Edit {
+class _RemoveStrokesEdit extends _Edit {
   _RemoveStrokesEdit(this.layerId, this.removed);
 
   final String layerId;

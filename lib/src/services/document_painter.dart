@@ -3,6 +3,8 @@ import 'package:flutter/material.dart';
 import '../models/layer.dart';
 import '../models/layer_blend.dart';
 import '../rust/api/stroke.dart' as rust;
+import 'raster_renderer.dart';
+import 'raster_surface.dart';
 import 'stroke_outline.dart';
 
 /// 把归一化笔画渲染到文档矩形内，采样点之间以二次贝塞尔平滑连接。
@@ -106,11 +108,16 @@ void paintStrokePath(
 /// 每条笔画按压感与否**由笔画自己决定**（`Stroke.usesPressure`），不读工具开关：
 /// 开关只影响接下来画的笔。活动笔画还没有 `Stroke` 实体，因此由 [activePressure]
 /// 单独传入——它取的就是当前工具的开关值。
+///
+/// 位图图层的内容来自 [rasterSource]：`Canvas` 绘制必须同步，而像素到 `ui.Image`
+/// 的转换天生异步，因此这里只做同步查询，未就绪的瓦片这一帧先不画。
+/// 调用方（画布 / 导出 / 缩略图）负责在此之前把图像准备好。
 void paintDocument(
   Canvas canvas,
   Rect rect,
   Color paperColor,
   List<DrawingLayer> layers, {
+  RasterTileSource? rasterSource,
   String? activeLayerId,
   List<rust.StrokePoint> activePoints = const <rust.StrokePoint>[],
   int activeColor = 0xFF000000,
@@ -125,6 +132,12 @@ void paintDocument(
 
   for (final layer in layers) {
     if (!layer.visible || layer.opacity <= 0) continue;
+
+    final surface = layer.raster;
+    if (surface != null) {
+      _paintRasterLayer(canvas, rect, layer, surface, rasterSource);
+      continue;
+    }
 
     final isActive = layer.id == activeLayerId;
     final hasActive = isActive && activePoints.isNotEmpty;
@@ -170,4 +183,38 @@ void paintDocument(
 
     if (needsLayer) canvas.restore();
   }
+}
+
+/// 画一个位图图层。
+///
+/// 与矢量层的差别只有两点：内容来自瓦片图像，以及**必须裁剪到文档矩形**——
+/// 最后一块瓦片可能超出画布边界（1080 不是 256 的整数倍），不裁剪就会画到纸外。
+///
+/// 位图图层不需要为「擦除」离屏合成：擦除在写入像素时就完成了（`BlendMode.clear`
+/// 的等价操作），不会影响其它图层。
+void _paintRasterLayer(
+  Canvas canvas,
+  Rect rect,
+  DrawingLayer layer,
+  RasterSurface surface,
+  RasterTileSource? source,
+) {
+  if (source == null) return;
+
+  final needsLayer = layer.opacity < 0.999 || !layer.blendMode.isNormal;
+  canvas.save();
+  canvas.clipRect(rect);
+  if (needsLayer) {
+    canvas.saveLayer(
+      rect,
+      Paint()
+        ..color = Colors.black.withValues(alpha: layer.opacity)
+        ..blendMode = layer.blendMode.blendMode,
+    );
+  }
+
+  (source).paintLayer(canvas, rect, surface);
+
+  if (needsLayer) canvas.restore();
+  canvas.restore();
 }

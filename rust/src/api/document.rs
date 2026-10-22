@@ -184,7 +184,10 @@ impl RasterInfo {
     /// 横向/纵向各需要多少块瓦片（至少 1）。
     pub fn grid(&self) -> (u32, u32) {
         let size = self.tile_size.max(1) as u32;
-        (self.width.div_ceil(size).max(1), self.height.div_ceil(size).max(1))
+        (
+            self.width.div_ceil(size).max(1),
+            self.height.div_ceil(size).max(1),
+        )
     }
 
     fn is_sane(&self) -> bool {
@@ -429,11 +432,7 @@ fn decode_layers(data: &[u8], layer_count: usize) -> DecodeOutcome {
 ///
 /// 出错时已解析的笔画会留在 `layer.strokes` 里：这是「部分恢复」的实现方式——
 /// 首条笔画就坏与第 100 条才坏的差别只在保住多少内容，不在是否整层丢弃。
-fn read_vector_payload(
-    data: &[u8],
-    start: usize,
-    layer: &mut Layer,
-) -> Result<usize, String> {
+fn read_vector_payload(data: &[u8], start: usize, layer: &mut Layer) -> Result<usize, String> {
     if data.len() < start + VECTOR_PAYLOAD_HEADER {
         return Err(format!("图层「{}」在笔画数处截断", layer.name));
     }
@@ -462,11 +461,7 @@ fn read_vector_payload(
 ///
 /// 截断发生在瓦片清单中途时保留已解析的瓦片——文档本身不含像素，
 /// 保住清单就等于保住了「哪些瓦片要读」，像素文件仍在磁盘上。
-fn read_raster_payload(
-    data: &[u8],
-    start: usize,
-    layer: &mut Layer,
-) -> Result<usize, String> {
+fn read_raster_payload(data: &[u8], start: usize, layer: &mut Layer) -> Result<usize, String> {
     if data.len() < start + RASTER_PAYLOAD_HEADER {
         return Err(format!("位图图层「{}」在尺寸处截断", layer.name));
     }
